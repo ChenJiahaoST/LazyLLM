@@ -138,6 +138,7 @@ class DocImpl:
                     if self._dlm: 
                         self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name,
                                                   new_status=DocListManager.Status.failed)
+                    continue
 
         if self._dlm:
             self._daemon = threading.Thread(target=self.worker)
@@ -267,6 +268,7 @@ class DocImpl:
                 filepaths = [doc.path for doc in docs]
                 ids = [doc.doc_id for doc in docs]
                 metadatas = [doc.metadata for doc in docs]
+                # update status and need_reparse
                 self._dlm.update_kb_group(cond_file_ids=ids, cond_group=self._kb_group_name, 
                                           new_status=DocListManager.Status.working, new_need_reparse=False)
                 self._delete_files(filepaths)
