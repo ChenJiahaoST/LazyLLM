@@ -105,14 +105,6 @@ class DocImpl:
                             doc_id = batch_ids[idx] if batch_ids else gen_docid(path)
                             metadata = batch_metadatas[idx].copy() if batch_metadatas else {}
 
-                            current_status = (
-                                self._dlm.get_kb_group_file_status(group=self._kb_group_name, file_id=doc_id)
-                                if self._dlm else None
-                            )
-                            if current_status != DocListManager.Status.working:
-                                LOG.warning(f"Skip file {path} because it is not in status {DocListManager.Status.working}"
-                                            f"current status is {current_status}")
-                                continue
                             valid_paths.append(path)
                             valid_ids.append(doc_id)
                             valid_metadatas.append(metadata)
