@@ -162,12 +162,15 @@ class TestDocument(unittest.TestCase):
         import time
         import requests
         doc = Document('rag_master', manager='ui')
-        doc.create_kb_group(name="test_group")
+        doc.create_kb_group(name='test_group')
+        doc2 = Document('rag_master', manager=doc.manager, name='test_group2')
         doc.start()
         time.sleep(4)
-        url = doc._impls._docweb.url
+        url = doc._manager._docweb.url
         response = requests.get(url)
         assert response.status_code == 200
+        assert doc2._curr_group == 'test_group2'
+        assert doc2.manager == doc.manager
         doc.stop()
 
 class TmpDir:
@@ -228,6 +231,45 @@ class TestDocumentServer(unittest.TestCase):
         nodes = self.doc_impl.store.get_nodes(LAZY_ROOT_NAME)
         assert len(nodes) == 1
         assert nodes[0].global_metadata[RAG_DOC_ID] == test2_docid
+        cur_meta_dict = nodes[0].global_metadata
+
+        url = f'{self.doc_server_addr}/add_metadata'
+        response = httpx.post(url, json=dict(doc_ids=[test2_docid], kv_pair={"title": "title2"}))
+        assert response.status_code == 200 and response.json().get('code') == 200
+        time.sleep(20)
+        assert cur_meta_dict["title"] == "title2"
+
+        response = httpx.post(url, json=dict(doc_ids=[test2_docid], kv_pair={"title": "TITLE2"}))
+        assert response.status_code == 200 and response.json().get('code') == 200
+        time.sleep(20)
+        assert cur_meta_dict["title"] == ["title2", "TITLE2"]
+
+        url = f'{self.doc_server_addr}/delete_metadata_item'
+        response = httpx.post(url, json=dict(doc_ids=[test2_docid], keys=["signature"]))
+        assert response.status_code == 200 and response.json().get('code') == 200
+        time.sleep(20)
+        assert "signature" not in cur_meta_dict
+
+        response = httpx.post(url, json=dict(doc_ids=[test2_docid], kv_pair={"title": "TITLE2"}))
+        assert response.status_code == 200 and response.json().get('code') == 200
+        time.sleep(20)
+        assert cur_meta_dict["title"] == ["title2"]
+
+        url = f'{self.doc_server_addr}/update_or_create_metadata_keys'
+        response = httpx.post(url, json=dict(doc_ids=[test2_docid], kv_pair={"signature": "signature2"}))
+        assert response.status_code == 200 and response.json().get('code') == 200
+        time.sleep(20)
+        assert cur_meta_dict["signature"] == "signature2"
+
+        url = f'{self.doc_server_addr}/reset_metadata'
+        response = httpx.post(url, json=dict(doc_ids=[test2_docid],
+                                             new_meta={"author": "author2", "signature": "signature_new"}))
+        assert response.status_code == 200 and response.json().get('code') == 200
+        time.sleep(20)
+        assert cur_meta_dict["signature"] == "signature_new" and cur_meta_dict["author"] == "author2"
+
+        url = f'{self.doc_server_addr}/query_metadata'
+        response = httpx.post(url, json=dict(doc_id=test2_docid))
 
         # make sure that only one file is left
         response = httpx.get(f'{self.doc_server_addr}/list_files')
