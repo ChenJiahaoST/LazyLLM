@@ -29,10 +29,13 @@ class MCPClient(object):
     async def _run_session(self):
         if urlparse(self._command_or_url).scheme in ("http", "https"):
             spec = importlib.util.find_spec("mcp.client.sse")
-            if spec is None: raise ImportError(
-                "Please install mcp to use mcp module. "
-                "You can install it with `pip install mcp`"
-            )
+            if spec is None:
+                raise ImportError(
+                    "Please install mcp to use mcp module. "
+                    "You can install it with `pip install mcp`"
+                )
+            if spec.loader is None:
+                raise ImportError("Module loader is not available for mcp.client.sse")
             sse_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(sse_module)
             sse_client = sse_module.sse_client
