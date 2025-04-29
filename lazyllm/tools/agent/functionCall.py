@@ -52,11 +52,11 @@ class StreamResponse():
 class FunctionCall(ModuleBase):
 
     def __init__(self, llm, tools: List[Union[str, Callable]], *, return_trace: bool = False,
-                 stream: bool = False, _prompt: str = None):
+                 stream: bool = False, _prompt: str = ""):
         super().__init__(return_trace=return_trace)
         if isinstance(llm, OnlineChatModule) and llm.series == "QWEN" and llm._stream is True:
             raise ValueError("The qwen platform does not currently support stream function calls.")
-        if _prompt is None:
+        if not _prompt:
             _prompt = FC_PROMPT_ONLINE if isinstance(llm, OnlineChatModule) else FC_PROMPT_LOCAL
 
         self._tools_manager = ToolManager(tools, return_trace=return_trace)
@@ -126,10 +126,11 @@ class FunctionCall(ModuleBase):
         return self._impl(input)
 
 class FunctionCallAgent(ModuleBase):
-    def __init__(self, llm, tools: List[str], max_retries: int = 5, return_trace: bool = False, stream: bool = False):
+    def __init__(self, llm, tools: List[str], prompt: str = "",
+                 max_retries: int = 5, return_trace: bool = False, stream: bool = False):
         super().__init__(return_trace=return_trace)
         self._max_retries = max_retries
-        self._fc = FunctionCall(llm, tools, return_trace=return_trace, stream=stream)
+        self._fc = FunctionCall(llm, tools, return_trace=return_trace, stream=stream, _prompt=prompt)
         self._agent = loop(self._fc, stop_condition=lambda x: isinstance(x, str), count=self._max_retries)
         self._fc._llm.used_by(self._module_id)
 
