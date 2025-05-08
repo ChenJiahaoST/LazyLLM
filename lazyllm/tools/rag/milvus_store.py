@@ -318,7 +318,7 @@ class MilvusStore(StoreBase):
     def _serialize_node_partial(self, node: DocNode) -> Dict:
         res = {
             'uid': node._uid,
-            'content': obj2str(node.get_text(metadata_mode=MetadataMode.NONE, max_length=65535)),
+            'content': node.get_text(metadata_mode=MetadataMode.NONE, max_length=65535),
             'parent': node.parent._uid if node.parent else '',
             'metadata': obj2str(node._metadata),
         }
@@ -338,7 +338,7 @@ class MilvusStore(StoreBase):
 
         doc = DocNode(
             uid=record.pop('uid'),
-            content=str2obj(record.pop('content')),
+            content=record.pop('content'),
             parent=record.pop('parent'),  # this is the parent's uid
             metadata=str2obj(record.pop('metadata')),
         )
