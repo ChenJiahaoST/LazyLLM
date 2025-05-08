@@ -46,9 +46,19 @@ class DocNode:
         if isinstance(self._content, str):
             return self._content
         elif isinstance(self._content, list):
-            if unexcepted := set([type(ele) for ele in self._content if not isinstance(ele, str)]):
-                raise TypeError(f"Found non-string element in content: {unexcepted}")
-            return '\n'.join(self._content)
+            parts = []
+            unexpected = set()
+
+            for ele in self._content:
+                if isinstance(ele, str):
+                    parts.append(ele)
+                elif isinstance(ele, dict) and 'text' in ele and isinstance(ele['text'], str):
+                    parts.append(ele['text'])
+                else:
+                    unexpected.add(type(ele))
+            if unexpected:
+                raise TypeError(f"Found unexpected element in content: {unexpected}")
+            return '\n'.join(parts)
         else:
             raise TypeError(f"content type '{type(self._content)}' is neither a str nor a list")
 
@@ -82,10 +92,6 @@ class DocNode:
         while root and root.parent:
             root = root.parent
         return root or self
-    
-    @property
-    def is_root_node(self) -> bool:
-        return (not self.parent)
 
     @property
     def is_root_node(self) -> bool:
@@ -200,11 +206,17 @@ class DocNode:
 
         return "\n".join([f"{key}: {self.metadata[key]}" for key in metadata_keys])
 
-    def get_text(self, metadata_mode: MetadataMode = MetadataMode.NONE) -> str:
+    def get_text(self, metadata_mode: MetadataMode = MetadataMode.NONE, max_length=None) -> str:
+        def _truncate_text(text: str, max_len: int) -> str:
+            if len(text) > max_len:
+                return text[:max_len - 3] + "..."
+            return text
         metadata_str = self.get_metadata_str(metadata_mode).strip()
         if not metadata_str:
-            return self.text if self.text else ""
-        return f"{metadata_str}\n\n{self.text}".strip()
+            text = self.text if self.text else ""
+        else:
+            text = f"{metadata_str}\n\n{self.text}".strip()
+        return text if max_length is None else _truncate_text(text, max_length)
 
     def to_dict(self) -> Dict:
         return dict(content=self._content, embedding=self.embedding, metadata=self.metadata)

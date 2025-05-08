@@ -5,6 +5,7 @@ import re
 import ast
 import pickle
 import base64
+import zlib
 
 def check_path(
     path: Union[str, PathLike],
@@ -38,7 +39,15 @@ def compile_func(func_code: str, global_env: Optional[Dict[str, Any]] = None) ->
     return local_dict[fname]
 
 def obj2str(obj: Any) -> str:
-    return base64.b64encode(pickle.dumps(obj)).decode('utf-8')
+    pickled = pickle.dumps(obj)
+    compressed = zlib.compress(pickled)
+    encoded = base64.b64encode(compressed).decode('utf-8')
+    return encoded
 
 def str2obj(data: str) -> Any:
-    return None if data is None else pickle.loads(base64.b64decode(data.encode('utf-8')))
+    if not data:
+        return None
+    decoded = base64.b64decode(data.encode('utf-8'))
+    decompressed = zlib.decompress(decoded)
+    data_restored = pickle.loads(decompressed)
+    return data_restored

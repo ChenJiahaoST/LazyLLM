@@ -55,7 +55,7 @@ class DocImpl:
         self._activated_embeddings = {}
 
     @once_wrapper(reset_on_pickle=True)
-    def _lazy_init(self) -> None:
+    def _lazy_init(self) -> None:   # noqa: C901
         node_groups = DocImpl._builtin_node_groups.copy()
         node_groups.update(DocImpl._global_node_groups)
         node_groups.update(self.node_groups)
@@ -63,7 +63,10 @@ class DocImpl:
 
         # set empty embed keys for groups that are not visited by Retriever
         for group in node_groups.keys():
-            self._activated_embeddings.setdefault(group, set())
+            if group == LAZY_ROOT_NAME:
+                self._activated_embeddings.setdefault(group, list(self.embed.keys()))
+            else:
+                self._activated_embeddings.setdefault(group, set())
 
         embed_dims = {}
         embed_datatypes = {}
@@ -106,7 +109,7 @@ class DocImpl:
                 except Exception as e:
                     # 当前文件解析失败，记录失败状态
                     LOG.error(f"[_lazy_init] Error loading [file={doc_id}] [path={path}]: {e}")
-                    if self._dlm: 
+                    if self._dlm:
                         self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name,
                                                   new_status=DocListManager.Status.failed)
                     continue
@@ -240,17 +243,17 @@ class DocImpl:
                 ids = [doc.doc_id for doc in docs]
                 metadatas = [doc.metadata for doc in docs]
                 # update status and need_reparse
-                self._dlm.update_kb_group(cond_file_ids=ids, cond_group=self._kb_group_name, 
+                self._dlm.update_kb_group(cond_file_ids=ids, cond_group=self._kb_group_name,
                                           new_status=DocListManager.Status.working, new_need_reparse=False)
                 self._delete_files(filepaths)
                 for filepath, doc_id, metadata in zip(filepaths, ids, metadatas):
                     try:
                         self._add_files(input_files=[filepath], ids=[doc_id], metadatas=[metadata])
-                        self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name, 
+                        self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name,
                                                   new_status=DocListManager.Status.success)
                     except Exception as e:
                         LOG.error(f"_add_files: Failed to add file {filepath} with error {e}")
-                        self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name, 
+                        self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name,
                                                   new_status=DocListManager.Status.failed)
 
             ids, files, metadatas = self._list_files(status=DocListManager.Status.deleting)
@@ -272,12 +275,12 @@ class DocImpl:
                     try:
                         self._add_files(input_files=[filepath], ids=[doc_id], metadatas=[metadata])
                         self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name,
-                                                  cond_status_list=[DocListManager.Status.working], 
+                                                  cond_status_list=[DocListManager.Status.working],
                                                   new_status=DocListManager.Status.success)
                     except Exception as e:
                         LOG.error(f"_add_files: Failed to add file {filepath} with error {e}")
                         self._dlm.update_kb_group(cond_file_ids=[doc_id], cond_group=self._kb_group_name,
-                                                  cond_status_list=[DocListManager.Status.working], 
+                                                  cond_status_list=[DocListManager.Status.working],
                                                   new_status=DocListManager.Status.failed)
                 continue
             time.sleep(10)
@@ -452,6 +455,6 @@ class DocImpl:
         return getattr(self, func_name)(*args, **kwargs)
 
 
-DocImpl._create_builtin_node_group(name="CoarseChunk", transform=SentenceSplitter, chunk_size=1024, chunk_overlap=100)
-DocImpl._create_builtin_node_group(name="MediumChunk", transform=SentenceSplitter, chunk_size=256, chunk_overlap=25)
-DocImpl._create_builtin_node_group(name="FineChunk", transform=SentenceSplitter, chunk_size=128, chunk_overlap=12)
+# DocImpl._create_builtin_node_group(name="CoarseChunk", transform=SentenceSplitter, chunk_size=1024, chunk_overlap=100)
+# DocImpl._create_builtin_node_group(name="MediumChunk", transform=SentenceSplitter, chunk_size=256, chunk_overlap=25)
+# DocImpl._create_builtin_node_group(name="FineChunk", transform=SentenceSplitter, chunk_size=128, chunk_overlap=12)

@@ -3,7 +3,7 @@ from packaging import version
 from collections import defaultdict
 from typing import Dict, List, Optional, Union, Callable, Set
 from lazyllm.thirdparty import pymilvus
-from .doc_node import DocNode
+from .doc_node import DocNode, MetadataMode
 from .map_store import MapStore
 from .utils import parallel_do_embedding
 from .index_base import IndexBase
@@ -54,7 +54,7 @@ class MilvusStore(StoreBase):
             RAG_DOC_FILE_NAME: GlobalMetadataDesc(data_type=DataType.VARCHAR,
                                                   default_value=' ', max_size=128),
             RAG_DOC_FILE_TYPE: GlobalMetadataDesc(data_type=DataType.VARCHAR,
-                                                  default_value=' ', max_size=64),
+                                                  default_value=' ', max_size=128),
             RAG_DOC_FILE_SIZE: GlobalMetadataDesc(data_type=DataType.INT32,
                                                   default_value=0),
             RAG_DOC_CREATION_DATE: GlobalMetadataDesc(data_type=DataType.VARCHAR,
@@ -252,7 +252,10 @@ class MilvusStore(StoreBase):
         use_iterator = current_version >= version.parse("2.4.11")
         LOG.info(f'the current pymilvus version is {pymilvus.__version__}, use_iterator is {use_iterator}')
         if not use_iterator:
-            LOG.warning('pymilvus version is lower than 2.4.11, we recommend to upgrade pymilvus to 2.4.11 to support larger data size')
+            LOG.warning(
+                'pymilvus version is lower than 2.4.11, '
+                'we recommend to upgrade pymilvus to 2.4.11 to support larger data size'
+            )
 
         for group_name in self._client.list_collections():
             if use_iterator:
@@ -271,14 +274,14 @@ class MilvusStore(StoreBase):
                         iterator.close()
                         break
                     results += result
-                
+
                 for result in results:
                     node = self._deserialize_node_partial(result)
                     node._group = group_name
                     uid2node.setdefault(node._uid, node)
             else:
                 results = self._client.query(collection_name=group_name,
-                                filter=f'{self._primary_key} != ""')
+                                filter=f'{self._primary_key} != ""')    # noqa: E128
 
         # construct DocNode::parent and DocNode::children
         for node in uid2node.values():
@@ -315,7 +318,7 @@ class MilvusStore(StoreBase):
     def _serialize_node_partial(self, node: DocNode) -> Dict:
         res = {
             'uid': node._uid,
-            'content': obj2str(node._content),
+            'content': obj2str(node.get_text(metadata_mode=MetadataMode.NONE, max_length=65535)),
             'parent': node.parent._uid if node.parent else '',
             'metadata': obj2str(node._metadata),
         }
