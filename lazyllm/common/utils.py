@@ -3,9 +3,9 @@ from os.path import expanduser, expandvars, isfile, join, normpath
 from typing import Union, Dict, Callable, Any, Optional
 import re
 import ast
-import pickle
+import msgpack
 import base64
-import zlib
+import lzma
 
 def check_path(
     path: Union[str, PathLike],
@@ -39,8 +39,8 @@ def compile_func(func_code: str, global_env: Optional[Dict[str, Any]] = None) ->
     return local_dict[fname]
 
 def obj2str(obj: Any) -> str:
-    pickled = pickle.dumps(obj)
-    compressed = zlib.compress(pickled)
+    packed = msgpack.packb(obj)
+    compressed = lzma.compress(packed)
     encoded = base64.b64encode(compressed).decode('utf-8')
     return encoded
 
@@ -48,6 +48,6 @@ def str2obj(data: str) -> Any:
     if not data:
         return None
     decoded = base64.b64decode(data.encode('utf-8'))
-    decompressed = zlib.decompress(decoded)
-    data_restored = pickle.loads(decompressed)
+    decompressed = lzma.decompress(decoded)
+    data_restored = msgpack.unpackb(decompressed, raw=False)
     return data_restored
