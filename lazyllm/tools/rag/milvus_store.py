@@ -274,22 +274,25 @@ class MilvusStore(StoreBase):
                         iterator.close()
                         break
                     results += result
-
-                for result in results:
-                    node = self._deserialize_node_partial(result)
-                    node._group = group_name
-                    uid2node.setdefault(node._uid, node)
             else:
                 results = self._client.query(collection_name=group_name,
                                 filter=f'{self._primary_key} != ""')    # noqa: E128
+            
+            for result in results:
+                node = self._deserialize_node_partial(result)
+                node._group = group_name
+                uid2node.setdefault(node._uid, node)
 
         # construct DocNode::parent and DocNode::children
         for node in uid2node.values():
             if node.parent:
                 parent_uid = node.parent
                 parent_node = uid2node.get(parent_uid)
-                node.parent = parent_node
-                parent_node.children[node._group].append(node)
+                if parent_node:
+                    node.parent = parent_node
+                    parent_node.children[node._group].append(node)
+                else:
+                    node.parent = None
 
         store.update_nodes(list(uid2node.values()))
 

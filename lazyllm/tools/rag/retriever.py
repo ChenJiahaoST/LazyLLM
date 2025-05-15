@@ -83,14 +83,11 @@ class Retriever(ModuleBase, _PostProcess):
             self, query: str, filters: Optional[Dict[str, Union[str, int, List, Set]]] = None
     ) -> Union[List[DocNode], str]:
         self._lazy_init()
-        nodes = []
+        all_nodes = []
         for doc in self._docs:
-            try:
-                retrieved_nodes = doc.forward(query=query, group_name=self._group_name, similarity=self._similarity,
-                                     similarity_cut_off=self._similarity_cut_off, index=self._index,
-                                     topk=self._topk, similarity_kws=self._similarity_kw, embed_keys=self._embed_keys,
-                                     filters=filters)
-            except:
-                retrieved_nodes = []
-            nodes.extend(retrieved_nodes)
-        return self._post_process(nodes)
+            nodes = doc.forward(query=query, group_name=self._group_name, similarity=self._similarity,
+                                similarity_cut_off=self._similarity_cut_off, index=self._index,
+                                topk=self._topk, similarity_kws=self._similarity_kw, embed_keys=self._embed_keys,
+                                filters=filters)
+            all_nodes.extend(nodes)
+        return self._post_process(all_nodes)
