@@ -76,12 +76,21 @@ class MilvusStore(StoreBase):
     def __init__(self, group_embed_keys: Dict[str, Set[str]], embed: Dict[str, Callable], # noqa C901
                  embed_dims: Dict[str, int], embed_datatypes: Dict[str, DataType],
                  global_metadata_desc: Dict[str, GlobalMetadataDesc],
-                 uri: str, index_kwargs: Optional[Union[Dict, List]] = None):
+                 uri: str, database: str, index_kwargs: Optional[Union[Dict, List]] = None):
         self._def_constants()
 
         self._group_embed_keys = group_embed_keys
         self._embed = embed
         self._client = pymilvus.MilvusClient(uri=uri)
+
+        try: 
+            if database:
+                existing_dbs = self._client.list_databases()
+                if database not in existing_dbs:
+                    self._client.create_database(database)
+                self._client.using_database(database)
+        except Exception as e:
+            LOG.error(f'milvus-standalone database error {e}')
 
         if embed_dims is None:
             embed_dims = {}
