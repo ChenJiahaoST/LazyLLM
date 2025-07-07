@@ -1,4 +1,5 @@
 import copy
+from urllib import parse
 from packaging import version
 from collections import defaultdict
 from typing import Dict, List, Optional, Union, Callable, Set
@@ -81,16 +82,32 @@ class MilvusStore(StoreBase):
 
         self._group_embed_keys = group_embed_keys
         self._embed = embed
-        self._client = pymilvus.MilvusClient(uri=uri)
+        self._uri = uri
+        self._db_name = database
+        self._client = pymilvus.MilvusClient(uri=self._uri)
 
-        try: 
-            if database:
-                existing_dbs = self._client.list_databases()
-                if database not in existing_dbs:
-                    self._client.create_database(database)
-                self._client.using_database(database)
-        except Exception as e:
-            LOG.error(f'milvus-standalone database error {e}')
+        if uri and parse.urlparse(uri).scheme.lower() not in ["unix", "http", "https", "tcp", "grpc"]:
+            self._type = 'local'
+        else:
+            self._type = 'remote'
+            try:
+                try:
+                    default_embedding_keys = next(
+                        keys for keys in self._group_embed_keys.values() if keys
+                    )
+                except StopIteration:
+                    raise ValueError('embedding keys are required for milvus standalone')
+                for group, keys in self._group_embed_keys.items():
+                    if not keys:
+                        self._group_embed_keys[group] = default_embedding_keys
+
+                if self._db_name:
+                    existing_dbs = self._client.list_databases()
+                    if self._db_name not in existing_dbs:
+                        self._client.create_database(self._db_name)
+                    self._client.using_database(self._db_name)
+            except Exception as e:
+                LOG.error(f'milvus-standalone database error {e}')
 
         if embed_dims is None:
             embed_dims = {}
@@ -145,13 +162,15 @@ class MilvusStore(StoreBase):
             if self._global_metadata_desc:
                 for key, desc in self._global_metadata_desc.items():
                     if desc.data_type == DataType.ARRAY:
-                        if not desc.element_type:
+                        if desc.element_type is None:
                             raise ValueError(f'Milvus field [{key}]: `element_type` is required when '
                                              '`data_type` is ARRAY.')
                         field_args = {
                             'element_type': self._type2milvus[desc.element_type],
                             'max_capacity': desc.max_size,
                         }
+                        if desc.element_type == DataType.VARCHAR:
+                            field_args['max_length'] = 65535
                     elif desc.data_type == DataType.VARCHAR:
                         field_args = {
                             'max_length': desc.max_size,
@@ -169,6 +188,14 @@ class MilvusStore(StoreBase):
         self._map_store = MapStore(node_groups=list(group_embed_keys.keys()), embed=embed)
         self._load_all_nodes_to(self._map_store)
 
+    def _check_connection(self):
+        if not pymilvus.connections.has_connection(alias=self._client._using):
+            LOG.info("Milvus Store: try to reconnect...")
+            if self._type == 'local':
+                pymilvus.connections.connect(alias=self._client._using, uri=self._uri)
+            else:
+                pymilvus.connections.connect(alias=self._client._using, db_name=self._db_name, uri=self._uri)
+
     @override
     def update_nodes(self, nodes: List[DocNode]) -> None:
         parallel_do_embedding(self._embed, [], nodes, self._group_embed_keys)
@@ -176,6 +203,7 @@ class MilvusStore(StoreBase):
         for node in nodes:
             data = self._serialize_node_partial(node)
             group_embed_dict[node._group].append(data)
+        self._check_connection()
         for group_name, data in group_embed_dict.items():
             for i in range(0, len(data), MILVUS_UPSERT_BATCH_SIZE):
                 self._client.upsert(collection_name=group_name, data=data[i:i + MILVUS_UPSERT_BATCH_SIZE])
@@ -286,7 +314,6 @@ class MilvusStore(StoreBase):
             else:
                 results = self._client.query(collection_name=group_name,
                                 filter=f'{self._primary_key} != ""')    # noqa: E128
-            
             for result in results:
                 node = self._deserialize_node_partial(result)
                 node._group = group_name
@@ -297,11 +324,10 @@ class MilvusStore(StoreBase):
             if node.parent:
                 parent_uid = node.parent
                 parent_node = uid2node.get(parent_uid)
-                if parent_node:
-                    node.parent = parent_node
-                    parent_node.children[node._group].append(node)
-                else:
-                    node.parent = None
+                if not parent_node:
+                    raise ValueError(f'cannot find parent node [{parent_uid}]')
+                node.parent = parent_node
+                parent_node.children[node._group].append(node)
 
         store.update_nodes(list(uid2node.values()))
 
@@ -313,7 +339,9 @@ class MilvusStore(StoreBase):
                 raise ValueError(f'cannot find desc of field [{name}]')
 
             key = self._gen_field_key(name)
-            if (not isinstance(candidates, List)) and (not isinstance(candidates, Set)):
+            if isinstance(candidates, str):
+                candidates = [candidates]
+            elif (not isinstance(candidates, list)) and (not isinstance(candidates, set)):
                 candidates = list(candidates)
             if desc.data_type == DataType.ARRAY:
                 # https://github.com/milvus-io/milvus/discussions/35279
