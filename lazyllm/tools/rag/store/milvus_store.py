@@ -1,13 +1,11 @@
-import os
 import copy
 from urllib import parse
 from packaging import version
 from collections import defaultdict
 from typing import Dict, List, Optional, Union, Callable, Set
 
-from .store_base import StoreBase, IMAGE_PATTERN
+from .store_base import StoreBase
 from .map_store import MapStore
-from .utils import create_file_path
 from ..doc_node import DocNode
 from ..utils import parallel_do_embedding
 from ..index_base import IndexBase
@@ -205,8 +203,6 @@ class MilvusStore(StoreBase):
 
     @override
     def update_nodes(self, nodes: List[DocNode]) -> None:
-        for node in nodes:
-            self._process_image_path(node)
         parallel_do_embedding(self._embed, [], nodes, self._group_embed_keys)
         group_embed_dict = defaultdict(list)
         for node in nodes:
@@ -332,20 +328,6 @@ class MilvusStore(StoreBase):
 
     def _gen_field_key(self, k: str) -> str:
         return self._global_metadata_key_prefix + k
-
-    def _process_image_path(self, node: DocNode) -> None:
-        content = node._content
-        if not isinstance(content, str):
-            return
-        image_prefix = os.getenv("RAG_IMAGE_PATH_PREFIX", "")
-        matches = IMAGE_PATTERN.findall(content)
-        for title, image_path in matches:
-            file_path = create_file_path(path=image_path, prefix=image_prefix)
-            if not os.path.exists(file_path):
-                continue
-            content = content.replace(image_path, file_path)
-        node._content = content
-        return
 
     def _load_all_nodes_to(self, store: StoreBase) -> None:
         uid2node = {}
