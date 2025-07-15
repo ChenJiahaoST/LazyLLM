@@ -10,7 +10,7 @@ import threading
 import time
 import copy
 
-_pickle_blacklist = {'_store', '_node_groups'}
+_pickle_blacklist = {'_store', '_node_groups', '_embedding'}
 
 
 class MetadataMode(str, Enum):

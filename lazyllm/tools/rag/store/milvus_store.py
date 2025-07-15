@@ -21,7 +21,7 @@ from lazyllm.common import override, obj2str, str2obj
 from lazyllm import LOG
 
 MILVUS_UPSERT_BATCH_SIZE = 500
-MILVUS_PAGINATION_OFFSET = 1000
+MILVUS_PAGINATION_OFFSET = 10000
 
 
 class MilvusStore(StoreBase):
