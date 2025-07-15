@@ -5,7 +5,6 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Union, Callable, Set
 
 from .store_base import StoreBase
-from .map_store import MapStore
 from ..doc_node import DocNode
 from ..utils import parallel_do_embedding
 from ..index_base import IndexBase
@@ -90,6 +89,7 @@ class MilvusStore(StoreBase):
         self._uri = uri
         self._db_name = db_name
         self._client = pymilvus.MilvusClient(uri=self._uri)
+        self._activated_groups = set()
 
         if uri and parse.urlparse(uri).scheme.lower() not in ["unix", "http", "https", "tcp", "grpc"]:
             self._type = 'local'
@@ -127,7 +127,7 @@ class MilvusStore(StoreBase):
             self._global_metadata_desc = self._builtin_global_metadata_desc
 
         collections = self._client.list_collections()
-        for group, embed_keys in group_embed_keys.items():
+        for group, embed_keys in self._group_embed_keys.items():
             if group in collections:
                 continue
 
@@ -190,9 +190,6 @@ class MilvusStore(StoreBase):
             schema = pymilvus.CollectionSchema(fields=field_list, auto_id=False, enable_dynamic_field=False)
             self._client.create_collection(collection_name=group, schema=schema, index_params=index_params)
 
-        self._map_store = MapStore(node_groups=list(group_embed_keys.keys()), embed=embed)
-        self._load_all_nodes_to(self._map_store)
-
     def _check_connection(self):
         if not pymilvus.connections.has_connection(alias=self._client._using):
             LOG.info("Milvus Store: try to reconnect...")
@@ -212,60 +209,96 @@ class MilvusStore(StoreBase):
         for group_name, data in group_embed_dict.items():
             for i in range(0, len(data), MILVUS_UPSERT_BATCH_SIZE):
                 self._client.upsert(collection_name=group_name, data=data[i:i + MILVUS_UPSERT_BATCH_SIZE])
-        self._map_store.update_nodes(nodes)
+        return
 
     @override
     def update_doc_meta(self, doc_id: str, metadata: dict) -> None:
-        self._map_store.update_doc_meta(doc_id=doc_id, metadata=metadata)
         for group in self.activated_groups():
-            nodes = self.get_nodes(group_name=group, doc_ids=[doc_id])
+            nodes: List[DocNode] = self.get_nodes(group_name=group, doc_ids=[doc_id])
+            for node in nodes:
+                node.global_metadata.update(metadata)
             self.update_nodes(nodes)
 
     @override
     def remove_nodes(self, doc_ids: List[str] = None, group_name: Optional[str] = None,
-                     uids: Optional[List[str]] = None) -> None:
+                     uids: Optional[List[str]] = None, **kwargs) -> None:
         self._check_connection()
-        nodes = self._map_store.get_nodes(group_name=group_name, doc_ids=doc_ids, uids=uids)
-        group2uids = defaultdict(list)
-        for node in nodes:
-            group2uids[node._group].append(node._uid)
-        for group, uids in group2uids.items():
+        if uids:
+            self._client.delete(collection_name=group_name, ids=uids)
+            return
+        if group_name:
+            groups = [group_name]
+        else:
+            groups = self.activated_groups()
+        filter_str = ""
+        if doc_ids:
+            filter_str += f'{RAG_DOC_ID} in {doc_ids}'
+        if kwargs.get('dataset_id'):
+            if filter_str: filter_str += ' and '
+            filter_str += f'kb_id == {kwargs.get("dataset_id")}'
+        for group in groups:
             if self._client.has_collection(group):
-                self._client.delete(collection_name=group,
-                                    filter=f'{self._primary_key} in {uids}')
-                self._map_store.remove_nodes(doc_ids=doc_ids, uids=uids)
+                self._client.delete(collection_name=group, filter=filter_str)
         return
 
     @override
     def get_nodes(self, group_name: Optional[str] = None, uids: Optional[List[str]] = None,
                   doc_ids: Optional[Set] = None, **kwargs) -> List[DocNode]:
-        return self._map_store.get_nodes(group_name, uids, doc_ids, **kwargs)
+        self._check_connection()
+        try:
+            col_desc = self._client.describe_collection(collection_name=group_name)
+            field_names = [field.get("name") for field in col_desc.get('fields', [])]
+            if uids:
+                res = self._client.get(collection_name=group_name, ids=uids)
+            else:
+                filter_str = ""
+                if doc_ids:
+                    filter_str += f'{RAG_DOC_ID} in {doc_ids}'
+                if version.parse(pymilvus.__version__) >= version.parse('2.4.11'):
+                    iterator = self._client.query_iterator(collection_name=group_name,
+                                                           batch_size=MILVUS_PAGINATION_OFFSET,
+                                                           output_fields=field_names, filter=filter_str)
+                    res = []
+                    while True:
+                        result = iterator.next()
+                        if not result:
+                            iterator.close()
+                            break
+                        res += result
+                else:
+                    res = self._client.query(collection_name=group_name, output_fields=field_names, filter=filter_str)
+            return [self._deserialize_node_partial(r, group_name) for r in res]
+        except Exception as e:
+            LOG.error(f'[Milvus Store - get] error: {e}')
+            return []
 
     @override
     def activate_group(self, group_names: Union[str, List[str]]) -> bool:
-        return self._map_store.activate_group(group_names)
+        if isinstance(group_names, str): group_names = [group_names]
+        self._activated_groups.update(group_names)
+        return True
 
     @override
     def activated_groups(self):
-        return self._map_store.activated_groups()
+        return list(self._activated_groups)
 
     @override
     def is_group_active(self, name: str) -> bool:
-        return self._map_store.is_group_active(name)
+        if not self._client.has_collection(name):
+            return False
+        return True
 
     @override
     def all_groups(self) -> List[str]:
-        return self._map_store.all_groups()
+        return list(self._activated_groups)
 
     @override
     def register_index(self, type: str, index: IndexBase) -> None:
-        self._map_store.register_index(type, index)
+        raise NotImplementedError('MilvusStore does not support register_index')
 
     @override
     def get_index(self, type: Optional[str] = None) -> Optional[IndexBase]:
-        if type is None:
-            type = 'default'
-        return self._map_store.get_index(type)
+        raise NotImplementedError('MilvusStore does not support get_index')
 
     @override
     def clear_cache(self, group_names: Optional[List[str]] = None):
@@ -273,7 +306,6 @@ class MilvusStore(StoreBase):
             for group_name in self.activated_groups():
                 if self._client.has_collection(group_name):
                     self._client.drop_collection(collection_name=group_name)
-            self._map_store.clear_cache()
         elif isinstance(group_names, str):
             group_names = [group_names]
         elif isinstance(group_names, (tuple, list, set)):
@@ -283,7 +315,6 @@ class MilvusStore(StoreBase):
         for group_name in group_names:
             if self._client.has_collection(group_name):
                 self._client.drop_collection(collection_name=group_name)
-        self._map_store.clear_cache(group_names)
 
     @override
     def query(self, query: str, group_name: str, similarity_name: Optional[str] = None,
@@ -320,9 +351,8 @@ class MilvusStore(StoreBase):
                 if res_id:
                     uid_score[res_id] = result.get('distance', float('-inf')) if res_id not in uid_score \
                         else max(uid_score[res_id], result.get('distance', float('-inf')))
-
         uids = list(uid_score.keys())
-        nodes = self._map_store.get_nodes(uids=uids)
+        nodes = self.get_nodes(group_name=group_name, uids=uids)
         return [node.with_sim_score(uid_score[node._uid]) for node in nodes]
 
     # ----- internal helper functions ----- #
@@ -332,54 +362,6 @@ class MilvusStore(StoreBase):
 
     def _gen_field_key(self, k: str) -> str:
         return self._global_metadata_key_prefix + k
-
-    def _load_all_nodes_to(self, store: StoreBase) -> None:
-        uid2node = {}
-        current_version = version.parse(pymilvus.__version__)
-        use_iterator = current_version >= version.parse("2.4.11")
-        LOG.info(f'the current pymilvus version is {pymilvus.__version__}, use_iterator is {use_iterator}')
-        if not use_iterator:
-            LOG.warning(
-                'pymilvus version is lower than 2.4.11, '
-                'we recommend to upgrade pymilvus to 2.4.11 to support larger data size'
-            )
-
-        for group_name in self._client.list_collections():
-            if use_iterator:
-                collection_desc = self._client.describe_collection(collection_name=group_name)
-                field_names = [field.get("name") for field in collection_desc.get('fields', [])]
-                iterator = self._client.query_iterator(
-                    collection_name=group_name,
-                    batch_size=MILVUS_PAGINATION_OFFSET,
-                    filter=f'{self._primary_key} != ""',
-                    output_fields=field_names
-                )
-                results = []
-                while True:
-                    result = iterator.next()
-                    if not result:
-                        iterator.close()
-                        break
-                    results += result
-            else:
-                results = self._client.query(collection_name=group_name,
-                                filter=f'{self._primary_key} != ""')    # noqa: E128
-            for result in results:
-                node = self._deserialize_node_partial(result)
-                node._group = group_name
-                uid2node.setdefault(node._uid, node)
-
-        # construct DocNode::parent and DocNode::children
-        for node in uid2node.values():
-            if node.parent:
-                parent_uid = node.parent
-                parent_node = uid2node.get(parent_uid)
-                if not parent_node:
-                    raise ValueError(f'cannot find parent node [{parent_uid}]')
-                node.parent = parent_node
-                parent_node.children[node._group].append(node)
-
-        store.update_nodes(list(uid2node.values()))
 
     def _construct_filter_expr(self, filters: Dict[str, Union[str, int, List, Set]]) -> str:
         ret_str = ""
@@ -423,7 +405,7 @@ class MilvusStore(StoreBase):
 
         return res
 
-    def _deserialize_node_partial(self, result: Dict) -> DocNode:
+    def _deserialize_node_partial(self, result: Dict, collection_name: Optional[str] = None) -> DocNode:
         record = copy.copy(result)
 
         doc = DocNode(
@@ -432,11 +414,11 @@ class MilvusStore(StoreBase):
             parent=record.pop('parent'),  # this is the parent's uid
             metadata=str2obj(record.pop('metadata')),
         )
-
+        if collection_name:
+            doc._group = collection_name
         for k, v in record.items():
             if k.startswith(self._embedding_key_prefix):
                 doc.embedding[k[len(self._embedding_key_prefix):]] = v
             elif k.startswith(self._global_metadata_key_prefix):
-                if doc.is_root_node:
-                    doc.global_metadata.update({k[len(self._global_metadata_key_prefix):]: v})
+                doc._global_metadata.update({k[len(self._global_metadata_key_prefix):]: v})
         return doc
