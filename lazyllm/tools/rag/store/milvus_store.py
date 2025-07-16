@@ -352,6 +352,8 @@ class MilvusStore(StoreBase):
                     uid_score[res_id] = result.get('distance', float('-inf')) if res_id not in uid_score \
                         else max(uid_score[res_id], result.get('distance', float('-inf')))
         uids = list(uid_score.keys())
+        if not uids:
+            return []
         nodes = self.get_nodes(group_name=group_name, uids=uids)
         return [node.with_sim_score(uid_score[node._uid]) for node in nodes]
 
