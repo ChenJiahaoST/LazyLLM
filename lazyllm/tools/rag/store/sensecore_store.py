@@ -238,7 +238,7 @@ class SenseCoreStore(StoreBase):
         """ update nodes to the store """
         filtered_nodes = []
         for node in nodes:
-            if isinstance(node, QADocNode):
+            if isinstance(node, QADocNode) and node.metadata.get("source_file_name"):
                 kb_id = node.global_metadata.get(RAG_DOC_KB_ID)
                 source_file = node.metadata["source_file_name"]
                 source_chunk = node.metadata["source_chunk"]
