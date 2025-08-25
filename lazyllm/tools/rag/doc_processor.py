@@ -156,8 +156,10 @@ class _Processor:
         self._store.update_doc_meta(doc_id=doc_id, metadata=metadata)
 
     def delete_doc(self, doc_ids: List[str] = None, kb_id: str = None) -> None:
+        if isinstance(doc_ids, str):
+            doc_ids = [doc_ids]
         LOG.info(f"delete_doc_ids: {doc_ids}")
-        self._store.remove_nodes(kb_id=kb_id, doc_ids=doc_ids)
+        self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
 
 
 class FileInfo(BaseModel):
@@ -549,7 +551,7 @@ class DocumentProcessor(ModuleBase):
             dataset_id = params.get("dataset_id")
             doc_ids = params.get("doc_ids")
             future = self._delete_executor.submit(
-                self._processors[algo_id].delete_doc, dataset_id=dataset_id, doc_ids=doc_ids
+                self._processors[algo_id].delete_doc, doc_ids=doc_ids, kb_id=dataset_id
             )
             if ENABLE_DB and params.get("db_info") is not None:
                 db_info = params.get("db_info")
