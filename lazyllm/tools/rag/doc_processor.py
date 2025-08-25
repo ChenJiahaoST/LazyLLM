@@ -162,6 +162,7 @@ class _Processor:
 
 class FileInfo(BaseModel):
     file_path: Optional[str] = None
+    transformed_file_path: Optional[str] = None
     doc_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = {}
     reparse_group: Optional[str] = None
@@ -392,7 +393,9 @@ class DocumentProcessor(ModuleBase):
                 return BaseResponse(code=400, msg=f'The task {task_id} already exists in queue', data=None)
             if self._path_prefix:
                 for file_info in file_infos:
-                    file_info.file_path = create_file_path(path=file_info.file_path, prefix=self._path_prefix)
+                    source_path = file_info.transformed_file_path if file_info.transformed_file_path \
+                        else file_info.file_path
+                    file_info.file_path = create_file_path(path=source_path, prefix=self._path_prefix)
 
             params = {"file_infos": file_infos, "db_info": db_info, "feedback_url": feedback_url}
             if ENABLE_DB:
