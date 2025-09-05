@@ -275,7 +275,8 @@ class _DocumentStore(object):
                                  ' are not supported when no vector store is provided')
             # vector search
             for embed_key in embed_keys:
-                query_embedding = self._embed.get(embed_key)(query)
+                instruct = kwargs.pop('instruct', None)
+                query_embedding = self._embed.get(embed_keys[0])(query, instruct=instruct)
                 search_res = self.impl.search(collection_name=self._gen_collection_name(group_name),
                                               query=query, query_embedding=query_embedding,
                                               topk=topk, filters=filters, embed_key=embed_key, **kwargs)
