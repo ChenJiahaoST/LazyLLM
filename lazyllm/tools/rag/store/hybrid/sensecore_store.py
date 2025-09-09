@@ -255,18 +255,25 @@ class SenseCoreStore(LazyLLMStoreBase):
     def _check_insert_job_status(self, job_id: str) -> None:
         url = urljoin(self._uri, f"v1/writerSegmentJobs/{job_id}")
         headers = {'Accept': 'application/json'}
+        check_start_time = time.time()
+        flag = False
         for wait_time in fibonacci_backoff(max_retries=15):
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             status = response.json()['state']
             if status == 2:
-                LOG.info(f"SenseCore Store: insert task {job_id} finished")
-                return
+                flag = True
+                break
             elif status == 3:
-                raise Exception(f"Insert task {job_id} failed")
+                break
             else:
                 time.sleep(wait_time)
-        raise Exception(f"Insert task {job_id} failed after seconds")
+        check_end_time = time.time()
+        if not flag:
+            LOG.error(f"SenseCore Store: insert task {job_id} failed after {check_end_time - check_start_time}s")
+            raise Exception(f"Insert task {job_id} failed after {check_end_time - check_start_time}s")
+        LOG.info(f"SenseCore Store: insert task {job_id} finished after {check_end_time - check_start_time}s")
+        return
 
     def _get_group_name(self, collection_name: str) -> str:
         return collection_name.split('_')[-1] if "lazyllm_root" not in collection_name else "lazyllm_root"
@@ -275,12 +282,16 @@ class SenseCoreStore(LazyLLMStoreBase):
     def upsert(self, collection_name: str, data: List[dict]) -> bool:
         if not data: return True
         try:
+            upsert_start_time = time.time()
             with pipeline() as insert_ppl:
                 insert_ppl.get_ids = warp(self._upload_data_and_insert).aslist
                 insert_ppl.check_status = warp(self._check_insert_job_status)
 
             batched_data = [data[i:i + INSERT_BATCH_SIZE] for i in range(0, len(data), INSERT_BATCH_SIZE)]
             insert_ppl(batched_data)
+            upsert_end_time = time.time()
+            LOG.info(f"[SenseCore Store - upsert] Upsert done! collection_name:{collection_name}, "
+                     f"Time:{upsert_end_time - upsert_start_time}s")
             return True
         except Exception as e:
             LOG.error(f"[SenseCore Store - upsert] insert task failed: {e}")

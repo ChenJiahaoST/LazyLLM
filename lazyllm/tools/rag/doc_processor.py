@@ -40,6 +40,7 @@ class _Processor:
     def add_doc(self, input_files: List[str], ids: Optional[List[str]] = None,
                 metadatas: Optional[List[Dict[str, Any]]] = None):
         try:
+            add_start_time = time.time()
             if not input_files: return
             if not ids: ids = [gen_docid(path) for path in input_files]
             if metadatas is None:
@@ -48,13 +49,19 @@ class _Processor:
                 metadata.setdefault(RAG_DOC_ID, doc_id)
                 metadata.setdefault(RAG_DOC_PATH, path)
                 metadata.setdefault(RAG_KB_ID, DEFAULT_KB_ID)
+            parse_start_time = time.time()
             root_nodes, image_nodes = self._reader.load_data(input_files, metadatas, split_image_nodes=True)
+            parse_end_time = time.time()
+            LOG.info(f"[_Processor - add_doc] Parse documents done! files:{input_files}, "
+                     f"Time:{parse_end_time - parse_start_time}s")
             self._store.update_nodes(self._set_nodes_number(root_nodes))
             self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME)
             if image_nodes:
                 self._store.update_nodes(self._set_nodes_number(image_nodes))
                 self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP)
-            LOG.info("Add documents done!")
+            add_end_time = time.time()
+            LOG.info(f"[_Processor - add_doc] Add documents done! files:{input_files}, "
+                     f"Time:{add_end_time - add_start_time}s")
         except Exception as e:
             LOG.error(f"Add documents failed: {e}, {traceback.format_exc()}")
             raise e
@@ -226,10 +233,11 @@ class DocumentProcessor(ModuleBase):
                 self._task_queue = queue.Queue()
                 self._tasks = {}    # running tasks
                 self._pending_task_ids = set()  # pending tasks
-                self._add_executor = ThreadPoolExecutor(max_workers=4)
+                self._max_workers = os.getenv("RAG_PROCESS_MAX_WORKERS", 8)
+                self._add_executor = ThreadPoolExecutor(max_workers=self._max_workers)
                 self._add_futures = {}
-                self._delete_executor = ThreadPoolExecutor(max_workers=4)
-                self._update_executor = ThreadPoolExecutor(max_workers=4)
+                self._delete_executor = ThreadPoolExecutor(max_workers=self._max_workers)
+                self._update_executor = ThreadPoolExecutor(max_workers=self._max_workers)
                 self._update_futures = {}
 
                 self._engines: dict[str, Engine] = {}
