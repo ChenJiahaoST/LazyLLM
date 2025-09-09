@@ -52,8 +52,6 @@ class _Processor:
             parse_start_time = time.time()
             root_nodes, image_nodes = self._reader.load_data(input_files, metadatas, split_image_nodes=True)
             parse_end_time = time.time()
-            LOG.info(f"[_Processor - add_doc] Parse documents done! files:{input_files}, "
-                     f"Time:{parse_end_time - parse_start_time}s")
             self._store.update_nodes(self._set_nodes_number(root_nodes))
             self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME)
             if image_nodes:
@@ -61,7 +59,8 @@ class _Processor:
                 self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP)
             add_end_time = time.time()
             LOG.info(f"[_Processor - add_doc] Add documents done! files:{input_files}, "
-                     f"Time:{add_end_time - add_start_time}s")
+                     f"Total Time:{add_end_time - add_start_time}s, "
+                     f"Parse Time:{parse_end_time - parse_start_time}s")
         except Exception as e:
             LOG.error(f"Add documents failed: {e}, {traceback.format_exc()}")
             raise e

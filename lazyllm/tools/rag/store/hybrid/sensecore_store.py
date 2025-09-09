@@ -246,7 +246,7 @@ class SenseCoreStore(LazyLLMStoreBase):
 
             response = requests.post(url, params=params, headers=headers, json=payload)
             response.raise_for_status()
-            LOG.info(f"SenseCore Store: insert task {job_id} submitted")
+            LOG.info(f"SenseCore Store: insert task {job_id} submitted, payload:{payload}")
         except Exception as e:
             LOG.error(f"SenseCore Store: insert task {job_id} failed: {e}")
             raise e
