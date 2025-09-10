@@ -432,7 +432,7 @@ class DocumentProcessor(ModuleBase):
                     resp.raise_for_status()
                     data = resp.json()
                     task = data.get('task', {})
-                    worker_id = task.get('worker_id')
+                    worker_id = data.get('worker_id')
 
                     if not task:
                         time.sleep(empty_backoff)
@@ -442,7 +442,6 @@ class DocumentProcessor(ModuleBase):
                     if worker_id != self._poller_id:
                         LOG.warning(f'[Poller] task is not for this worker {self._poller_id} !'
                                     f' Current worker {worker_id}')
-                        continue
 
                     task_id = task.get('task_id')
                     algo_id = task.get('algo_id')
