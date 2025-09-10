@@ -408,7 +408,7 @@ class DocumentProcessor(ModuleBase):
             self._begin_shutdown()
             return BaseResponse(code=200, msg='ok')
 
-        def _poller(self):
+        def _poller(self):  # noqa: C901
             if not self._queue_get_url:
                 LOG.warning('[DocumentProcessor - _poller] queue_get_url not set, poller disabled')
                 return
@@ -455,6 +455,12 @@ class DocumentProcessor(ModuleBase):
 
                     if ENABLE_DB and db_info is not None:
                         self.create_table(db_info=db_info)
+
+                    if self._path_prefix:
+                        for file_info in file_infos:
+                            source_path = file_info.transformed_file_path if file_info.transformed_file_path \
+                                else file_info.file_path
+                            file_info.file_path = create_file_path(path=source_path, prefix=self._path_prefix)
 
                     params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
                     self._pending_task_ids.add(task_id)
