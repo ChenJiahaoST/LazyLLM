@@ -11,7 +11,7 @@ from .store_base import (LazyLLMStoreBase, StoreCapability, SegmentType, Segment
                          BUILDIN_GLOBAL_META_DESC, DEFAULT_KB_ID)
 from .hybrid import HybridStore, MapStore
 from ..default_index import DefaultIndex
-from ..utils import parallel_do_embedding
+from ..utils import parallel_do_embedding, is_sparse
 
 from ..doc_node import DocNode, QADocNode, ImageDocNode
 from ..index_base import IndexBase
@@ -23,13 +23,12 @@ from ..similarity import registered_similarities
 class _DocumentStore(object):
     def __init__(self, algo_name: str, store: Union[Dict, LazyLLMStoreBase],
                  group_embed_keys: Optional[Dict[str, Set[str]]] = None, embed: Optional[Dict[str, Callable]] = None,
-                 embed_dims: Optional[Dict[str, int]] = None, embed_datatypes: Optional[Dict[str, DataType]] = None,
                  global_metadata_desc: Optional[Dict[str, GlobalMetadataDesc]] = None):
         self._algo_name = algo_name
         self._group_embed_keys = group_embed_keys
         self._embed = embed
-        self._embed_dims = embed_dims
-        self._embed_datatypes = embed_datatypes
+        self._embed_dims = {}
+        self._embed_datatypes = {}
         self._global_metadata_desc = (global_metadata_desc or {}) | BUILDIN_GLOBAL_META_DESC
         self._activated_groups = set()
         self._indices = {}
@@ -123,6 +122,20 @@ class _DocumentStore(object):
 
     @once_wrapper(reset_on_pickle=True)
     def _lazy_init(self):
+        if self._impl.need_embedding and self._embed:
+            used_embed_keys = set()
+            for group in self._group_embed_keys:
+                used_embed_keys.update(self._group_embed_keys[group])
+            for k, e in self._embed.items():
+                if k not in used_embed_keys:
+                    continue
+                embedding = e('a')
+                if is_sparse(embedding):
+                    self._embed_datatypes[k] = DataType.SPARSE_FLOAT_VECTOR
+                else:
+                    self._embed_dims[k] = len(embedding)
+                    self._embed_datatypes[k] = DataType.FLOAT_VECTOR
+
         self._impl.connect(embed_dims=self._embed_dims, embed_datatypes=self._embed_datatypes,
                            global_metadata_desc=self._global_metadata_desc,
                            collections=[self._gen_collection_name(group) for group in self.activated_groups()])
@@ -153,7 +166,7 @@ class _DocumentStore(object):
         if not nodes:
             return
         try:
-            if self._embed and self.impl.capability == StoreCapability.SEGMENT:
+            if self.impl.capability == StoreCapability.SEGMENT and self._embed:
                 LOG.warning(f'[_DocumentStore - {self._algo_name}] Embed is provided'
                             f' but store {self.impl} does not support embedding')
             if self.impl.need_embedding:
@@ -267,31 +280,39 @@ class _DocumentStore(object):
               similarity_cut_off: Union[float, Dict[str, float]] = float('-inf'),
               topk: Optional[int] = 10, embed_keys: Optional[List[str]] = None,
               filters: Optional[Dict[str, Union[str, int, List, Set]]] = None, **kwargs) -> List[DocNode]:
-        self._validate_query_params(group_name, similarity_name, embed_keys)
-        segments = []
-        if embed_keys:
-            if self.impl.capability == StoreCapability.SEGMENT:
-                raise ValueError(f'[_DocumentStore - {self._algo_name}] Embed keys {embed_keys}'
-                                 ' are not supported when no vector store is provided')
-            # vector search
-            for embed_key in embed_keys:
-                instruct = kwargs.pop('instruct', None)
-                query_embedding = self._embed.get(embed_keys[0])(query, instruct=instruct)
-                search_res = self.impl.search(collection_name=self._gen_collection_name(group_name),
-                                              query=query, query_embedding=query_embedding,
-                                              topk=topk, filters=filters, embed_key=embed_key, **kwargs)
-                if search_res:
-                    sim_cut_off = similarity_cut_off if isinstance(similarity_cut_off, float)\
-                        else similarity_cut_off[embed_key]
-                    segments.extend([res for res in search_res if res.get('score', 0) >= sim_cut_off])
-        else:
-            # text search
-            if self.impl.capability == StoreCapability.VECTOR:
-                raise ValueError(f'[_DocumentStore - {self._algo_name}] Text search is not'
-                                 ' supported when no segment store is provided')
-            segments.extend(self.impl.search(collection_name=self._gen_collection_name(group_name),
-                                             query=query, topk=topk, filters=filters, **kwargs))
-        return [self._deserialize_node(segment, segment.get('score', 0)) for segment in segments]
+        try:
+            self._validate_query_params(group_name, similarity_name, embed_keys)
+            segments = []
+            if embed_keys:
+                if self.impl.capability == StoreCapability.SEGMENT:
+                    raise ValueError(f'[_DocumentStore - {self._algo_name}] Embed keys {embed_keys}'
+                                     ' are not supported when no vector store is provided')
+                # vector search
+                for embed_key in embed_keys:
+                    instruct = kwargs.pop('instruct', None)
+                    if self.impl.need_embedding:
+                        query_embedding = self._embed.get(embed_keys[0])(query, instruct=instruct)
+                    else:
+                        query_embedding = None
+                    search_res = self.impl.search(collection_name=self._gen_collection_name(group_name),
+                                                  query=query, query_embedding=query_embedding,
+                                                  topk=topk, filters=filters, embed_key=embed_key, **kwargs)
+                    if search_res:
+                        sim_cut_off = similarity_cut_off if isinstance(similarity_cut_off, float)\
+                            else similarity_cut_off[embed_key]
+                        segments.extend([res for res in search_res if res.get('score', 0) >= sim_cut_off])
+            else:
+                # text search
+                if self.impl.capability == StoreCapability.VECTOR:
+                    raise ValueError(f'[_DocumentStore - {self._algo_name}] Text search is not'
+                                     ' supported when no segment store is provided')
+                segments.extend(self.impl.search(collection_name=self._gen_collection_name(group_name),
+                                                 query=query, topk=topk, filters=filters, **kwargs))
+            return [self._deserialize_node(segment, segment.get('score', 0)) for segment in segments]
+        except Exception as e:
+            LOG.error(f'[_DocumentStore - {self._algo_name}] Failed to query: {e}')
+            LOG.error(traceback.format_exc())
+            return []
 
     def _validate_query_params(self, group_name: str, similarity: str,
                                embed_keys: Optional[List[str]] = None, **kwargs) -> bool:

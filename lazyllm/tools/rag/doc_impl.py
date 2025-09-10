@@ -13,9 +13,8 @@ from .store import (LAZY_ROOT_NAME, LAZY_IMAGE_GROUP, LazyLLMStoreBase)
 from .store.document_store import _DocumentStore
 from .doc_node import DocNode
 from .data_loaders import DirectoryReader
-from .utils import DocListManager, is_sparse
+from .utils import DocListManager
 from .global_metadata import GlobalMetadataDesc, RAG_KB_ID
-from .data_type import DataType
 from .doc_processor import _Processor, DocumentProcessor
 from dataclasses import dataclass
 from itertools import repeat
@@ -142,18 +141,9 @@ class DocImpl:
 
     def _create_store(self):
         if self.store is None: self.store = {'type': 'map'}
-        embed_dims, embed_datatypes = {}, {}
-        for k, e in self.embed.items():
-            embedding = e('a')
-            if is_sparse(embedding):
-                embed_datatypes[k] = DataType.SPARSE_FLOAT_VECTOR
-            else:
-                embed_dims[k] = len(embedding)
-                embed_datatypes[k] = DataType.FLOAT_VECTOR
 
         self.store = _DocumentStore(algo_name=self._algo_name, store=self.store,
                                     group_embed_keys=self._activated_embeddings, embed=self.embed,
-                                    embed_dims=embed_dims, embed_datatypes=embed_datatypes,
                                     global_metadata_desc=self._global_metadata_desc)
         self.store.activate_group(self._activated_groups)
 
