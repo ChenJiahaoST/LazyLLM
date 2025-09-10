@@ -22,6 +22,9 @@ import requests
 import uuid
 import os
 import traceback
+import random
+import signal
+import subprocess
 
 DB_TYPES = ['mysql']
 ENABLE_DB = os.getenv("RAG_ENABLE_DB", "false").lower() == "true"
@@ -191,14 +194,14 @@ class AddDocRequest(BaseModel):
     task_id: str
     algo_id: Optional[str] = "__default__"
     file_infos: List[FileInfo]
-    db_info: DBInfo
+    db_info: Optional[DBInfo] = None
     feedback_url: Optional[str] = None
 
 
 class UpdateMetaRequest(BaseModel):
     algo_id: Optional[str] = "__default__"
     file_infos: List[FileInfo]
-    db_info: DBInfo
+    db_info: Optional[DBInfo] = None
 
 
 class DeleteDocRequest(BaseModel):
@@ -219,6 +222,7 @@ class DocumentProcessor(ModuleBase):
             self._processors: Dict[str, _Processor] = dict()
             self._server = server
             self._inited = False
+            self._draining = False
             try:
                 self._feedback_url = config['process_feedback_service']
                 self._path_prefix = config['process_path_prefix']
@@ -226,26 +230,45 @@ class DocumentProcessor(ModuleBase):
                 LOG.warning(f"Failed to get config: {e}, use env variables instead")
                 self._feedback_url = os.getenv("PROCESS_FEEDBACK_SERVICE", None)
                 self._path_prefix = os.getenv("PROCESS_PATH_PREFIX", None)
+            self._queue_get_url = os.getenv("RAG_FILE_QUEUE_GET_URL", None)
 
         def _init_components(self, server: bool):
             if server and not self._inited:
-                self._task_queue = queue.Queue()
                 self._tasks = {}    # running tasks
-                self._pending_task_ids = set()  # pending tasks
+                self._pending_task_ids = set()  # pending task ids
                 self._max_workers = int(os.getenv("RAG_PROCESS_MAX_WORKERS", '8'))
+                self._task_queue = queue.Queue(maxsize=2 * self._max_workers)
+
                 self._add_executor = ThreadPoolExecutor(max_workers=self._max_workers)
-                self._add_futures = {}
                 self._delete_executor = ThreadPoolExecutor(max_workers=self._max_workers)
                 self._update_executor = ThreadPoolExecutor(max_workers=self._max_workers)
 
-                self._update_futures = {}
                 self._engines: dict[str, Engine] = {}
                 self._inspectors: dict[str, inspect] = {}
+                self._update_futures = {}
+
+                self._stop_event = threading.Event()
 
                 self._worker_thread = threading.Thread(target=self._worker, daemon=True)
                 self._worker_thread.start()
+
+                if self._queue_get_url:
+                    self._poller_id = 'worker_' + subprocess.check_output(['hostname', '-i']).decode().strip()
+                    self._poll_interval = float(os.getenv("RAG_PROCESS_POLL_INTERVAL", '1.0'))
+                    self._poller_thread = threading.Thread(target=self._poller, daemon=True)
+                    self._poller_thread.start()
+                try:
+                    signal.signal(signal.SIGTERM, lambda *_: self._begin_shutdown())
+                except Exception as e:
+                    LOG.error(f"[DocumentProcessor] Failed to register signal handler: {e}")
+                    try:
+                        import atexit
+                        atexit.register(self._begin_shutdown)
+                    except Exception as e:
+                        LOG.error(f"[DocumentProcessor] Failed to register atexit handler: {e}")
+
             self._inited = True
-            LOG.info(f"[DocumentProcessor] init done. feedback {self._feedback_url}, prefix {self._path_prefix}")
+            LOG.info(f"[DocumentProcessor] init done. feedback_url {self._feedback_url}, prefix {self._path_prefix}")
 
         def register_algorithm(self, name: str, store: _DocumentStore, reader: ReaderBase,
                                node_groups: Dict[str, Dict], display_name: Optional[str] = None,
@@ -262,6 +285,14 @@ class DocumentProcessor(ModuleBase):
                 LOG.warning(f'Processor {name} not found!')
                 return
             self._processors.pop(name)
+
+        def _begin_shutdown(self):
+            if self._draining:
+                return
+            LOG.info("[DocumentProcessor] Draining...")
+            self._draining = True
+            self._stop_event.set()
+            threading.Thread(target=self._graceful_shutdown, daemon=True).start()
 
         def _get_engine(self, url) -> Engine:
             if url not in self._engines:
@@ -366,6 +397,105 @@ class DocumentProcessor(ModuleBase):
                     stmt = delete(table).where(table.c.document_id == document_id)
                     conn.execute(stmt)
 
+        @app.get('/ready')
+        async def ready(self):
+            if self._draining:
+                return BaseResponse(code=503, msg='draining')
+            return BaseResponse(code=200, msg='ok')
+
+        @app.get('/prestop')
+        async def prestop(self):
+            self._begin_shutdown()
+            return BaseResponse(code=200, msg='ok')
+
+        def _poller(self):
+            if not self._queue_get_url:
+                LOG.warning("[DocumentProcessor - _poller] queue_get_url not set, poller disabled")
+                return
+            headers = {"Accept": "application/json"}
+            # if self._auth_token:
+            #     headers["Authorization"] = f"Bearer {self._auth_token}"
+
+            empty_backoff = self._poll_interval
+            while not self._stop_event.is_set() and not self._draining:
+                active = sum(1 for (fut, _) in list(self._tasks.values()) if fut and not fut.done())
+                capacity = max(0, self._max_workers - active - self._task_queue.qsize())
+
+                if capacity <= 0:
+                    time.sleep(0.2)
+                    continue
+                try:
+                    params = {'worker_id': self._poller_id}
+                    resp = requests.get(self._queue_get_url, headers=headers, timeout=10, params=params)
+                    if resp.status_code == 204 or not resp.content:
+                        time.sleep(empty_backoff)
+                        empty_backoff = min(empty_backoff * 1.5, 5.0)
+                        continue
+
+                    resp.raise_for_status()
+                    data = resp.json()
+                    task = data.get("task", {})
+                    worker_id = task.get("worker_id")
+
+                    if not task:
+                        time.sleep(empty_backoff)
+                        empty_backoff = min(empty_backoff * 1.5, 5.0)
+                        continue
+
+                    if worker_id != self._poller_id:
+                        LOG.warning(f"[Poller] task is not for this worker {self._poller_id}, task {task}")
+                        time.sleep(empty_backoff)
+                        empty_backoff = min(empty_backoff * 1.5, 5.0)
+                        continue
+
+                    task_id = task.get("task_id")
+                    algo_id = task.get("algo_id")
+                    db_info = task.get("db_info")
+                    feedback_url = task.get("feedback_url")
+                    file_infos = task.get("file_infos")
+                    params = {"file_infos": file_infos, "db_info": db_info, "feedback_url": feedback_url}
+
+                    if ENABLE_DB and db_info is not None:
+                        self.create_table(db_info=db_info)
+
+                    self._pending_task_ids.add(task_id)
+                    self._task_queue.put(('add', algo_id, task_id, params))
+                    LOG.info(f"[Poller] task {task_id} pulled, params {params}")
+                    empty_backoff = self._poll_interval
+                except Exception as e:
+                    LOG.error(f"[Poller] fetch failed: {e}")
+                    time.sleep(min(self._poll_interval * 2, 5.0) + random.random() * 0.5)
+            LOG.info("[Poller] stopped")
+
+        def _graceful_shutdown(self, wait_sec: int = 10):
+            deadline = time.time() + wait_sec
+
+            while time.time() < deadline:
+                if all(f.done() for f, _ in list(self._tasks.values())):
+                    break
+                time.sleep(0.5)
+
+            for task_id, (future, callback_path) in list(self._tasks.items()):
+                if future and not future.done():
+                    try:
+                        future.cancel()
+                    except Exception as e:
+                        LOG.error(f"[Poller] cancel task {task_id} failed: {e}")
+                    if callback_path:
+                        self._send_status_message(task_id, callback_path, success=False,
+                                                  error_code="Shutdown", error_msg="pod is draining")
+                    LOG.warning(f"[Shutdown] task {task_id} canceled and failed")
+                self._tasks.pop(task_id, None)
+            while not self._task_queue.empty():
+                task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
+                if task_type == 'add':
+                    callback_path = params.get('feedback_url')
+                    if callback_path:
+                        self._send_status_message(task_id, callback_path, success=False,
+                                                  error_code="Shutdown", error_msg="pod is draining")
+                self._pending_task_ids.discard(task_id)
+            LOG.info("[Shutdown] drain completed")
+
         @app.get('/algo/list')
         async def get_algo_list(self) -> None:
             res = []
@@ -390,6 +520,8 @@ class DocumentProcessor(ModuleBase):
 
         @app.post('/doc/add')
         async def async_add_doc(self, request: AddDocRequest):
+            if self._draining:
+                return BaseResponse(code=503, msg='draining')
             LOG.info(f"Add doc for {request.model_dump_json()}")
             task_id = request.task_id
             algo_id = request.algo_id
@@ -407,7 +539,7 @@ class DocumentProcessor(ModuleBase):
                     file_info.file_path = create_file_path(path=source_path, prefix=self._path_prefix)
 
             params = {"file_infos": file_infos, "db_info": db_info, "feedback_url": feedback_url}
-            if ENABLE_DB:
+            if ENABLE_DB and db_info is not None:
                 self.create_table(db_info=db_info)
             self._pending_task_ids.add(task_id)
             self._task_queue.put(('add', algo_id, task_id, params))
@@ -415,6 +547,8 @@ class DocumentProcessor(ModuleBase):
 
         @app.post('/doc/meta/update')
         async def async_update_meta(self, request: UpdateMetaRequest):
+            if self._draining:
+                return BaseResponse(code=503, msg='draining')
             LOG.info(f"update doc meta for {request.model_dump_json()}")
             algo_id = request.algo_id
             file_infos = request.file_infos
@@ -440,7 +574,7 @@ class DocumentProcessor(ModuleBase):
                     if self._update_futures.get(doc_id) is fut:
                         del self._update_futures[doc_id]
                 new_fut.add_done_callback(_cleanup)
-                if ENABLE_DB:
+                if ENABLE_DB and db_info is not None:
                     new_fut.add_done_callback(
                         lambda fut, dbi=db_info, fi=file_info: self.operate_db(dbi, 'upsert', file_infos=[fi]))
 
@@ -448,6 +582,8 @@ class DocumentProcessor(ModuleBase):
 
         @app.delete('/doc/delete')
         async def async_delete_doc(self, request: DeleteDocRequest) -> None:
+            if self._draining:
+                return BaseResponse(code=503, msg='draining')
             LOG.info(f"Del doc for {request.model_dump_json()}")
             algo_id = request.algo_id
             dataset_id = request.dataset_id
@@ -465,6 +601,8 @@ class DocumentProcessor(ModuleBase):
 
         @app.post('/doc/cancel')
         async def cancel_task(self, request: CancelDocRequest):
+            if self._draining:
+                return BaseResponse(code=503, msg='draining')
             task_id = request.task_id
             if task_id in self._pending_task_ids:
                 self._pending_task_ids.remove(task_id)
@@ -538,7 +676,7 @@ class DocumentProcessor(ModuleBase):
                 if input_files:
                     future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=input_files,
                                                        ids=ids, metadatas=metadatas)
-                    if ENABLE_DB:
+                    if ENABLE_DB and db_info is not None:
                         future.add_done_callback(lambda fut: self.operate_db(db_info, 'upsert', file_infos=file_infos))
                 elif reparse_group:
                     future = self._add_executor.submit(self._processors[algo_id].reparse, group_name=reparse_group,
@@ -568,6 +706,9 @@ class DocumentProcessor(ModuleBase):
         def _worker(self):  # noqa: C901
             while True:
                 try:
+                    if self._draining:
+                        time.sleep(0.2)
+                        continue
                     task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
                     if task_id not in self._pending_task_ids:
                         LOG.warning(f"[Worker] drop task not in pending: {task_id} ({task_type}, {algo_id}, {params})")
@@ -579,7 +720,7 @@ class DocumentProcessor(ModuleBase):
                     time.sleep(0.2)
                 except queue.Empty:
                     task_need_pop = []
-                    for task_id, (future, callback_path) in self._tasks.items():
+                    for task_id, (future, callback_path) in list(self._tasks.items()):
                         if future.done():
                             task_need_pop.append(task_id)
                             ex = future.exception()
