@@ -443,6 +443,9 @@ class DocumentProcessor(ModuleBase):
                     if worker_id != self._poller_id:
                         LOG.warning(f'[Poller] task is not for this worker {self._poller_id} !'
                                     f' Current worker {worker_id}')
+                    raw_db_info = task.get('db_info')
+                    if not raw_db_info:
+                        task['db_info'] = None
                     task_info = AddDocRequest(**task)
                     task_id = task_info.task_id
                     algo_id = task_info.algo_id
