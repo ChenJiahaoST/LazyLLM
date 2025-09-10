@@ -27,7 +27,7 @@ import signal
 import subprocess
 
 DB_TYPES = ['mysql']
-ENABLE_DB = os.getenv("RAG_ENABLE_DB", "false").lower() == "true"
+ENABLE_DB = os.getenv('RAG_ENABLE_DB', 'false').lower() == 'true'
 
 
 class _Processor:
@@ -61,11 +61,11 @@ class _Processor:
                 self._store.update_nodes(self._set_nodes_number(image_nodes))
                 self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP)
             add_end_time = time.time()
-            LOG.info(f"[_Processor - add_doc] Add documents done! files:{input_files}, "
-                     f"Total Time:{add_end_time - add_start_time}s, "
-                     f"Parse Time:{parse_end_time - parse_start_time}s")
+            LOG.info(f'[_Processor - add_doc] Add documents done! files:{input_files}, '
+                     f'Total Time:{add_end_time - add_start_time}s, '
+                     f'Parse Time:{parse_end_time - parse_start_time}s')
         except Exception as e:
-            LOG.error(f"Add documents failed: {e}, {traceback.format_exc()}")
+            LOG.error(f'Add documents failed: {e}, {traceback.format_exc()}')
             raise e
 
     def _set_nodes_number(self, nodes: List[DocNode]) -> List[DocNode]:
@@ -85,8 +85,8 @@ class _Processor:
         for group_name in self._store.activated_groups():
             group = self._node_groups.get(group_name)
             if group is None:
-                raise ValueError(f"Node group '{group_name}' does not exist. Please check the group name "
-                                 "or add a new one through `create_node_group`.")
+                raise ValueError(f'Node group {group_name} does not exist. Please check the group name '
+                                 'or add a new one through `create_node_group`.')
 
             if group['parent'] == p_name:
                 nodes = self._create_nodes_impl(p_nodes, group_name)
@@ -116,7 +116,7 @@ class _Processor:
 
     def _reparse_docs(self, group_name: str, doc_ids: List[str], doc_paths: List[str], metadatas: List[Dict]):
         kb_id = metadatas[0].get(RAG_KB_ID, None)
-        if group_name == "all":
+        if group_name == 'all':
             self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
             removed_flag = False
             for wait_time in fibonacci_backoff():
@@ -126,7 +126,7 @@ class _Processor:
                     break
                 time.sleep(wait_time)
             if not removed_flag:
-                raise Exception(f"Failed to remove nodes for docs {doc_ids} from store")
+                raise Exception(f'Failed to remove nodes for docs {doc_ids} from store')
             self.add_doc(input_files=doc_paths, ids=doc_ids, metadatas=metadatas)
         else:
             p_nodes = self._store.get_nodes(group=self._node_groups[group_name]['parent'],
@@ -145,7 +145,7 @@ class _Processor:
                 break
             time.sleep(wait_time)
         if not removed_flag:
-            raise Exception(f"Failed to remove nodes for docs {doc_ids} group {cur_name} from store")
+            raise Exception(f'Failed to remove nodes for docs {doc_ids} group {cur_name} from store')
 
         t = self._node_groups[cur_name]['transform']
         transform = AdaptiveTransform(t) if isinstance(t, list) or t.pattern else make_transform(t, cur_name)
@@ -156,8 +156,8 @@ class _Processor:
         for group_name in self._store.activated_groups():
             group = self._node_groups.get(group_name)
             if group is None:
-                raise ValueError(f"Node group '{group_name}' does not exist. Please check the group name "
-                                 "or add a new one through `create_node_group`.")
+                raise ValueError(f'Node group {group_name} does not exist. Please check the group name '
+                                 'or add a new one through `create_node_group`.')
             if group['parent'] == cur_name:
                 self._reparse_group_recursive(p_nodes=nodes, cur_name=group_name, doc_ids=doc_ids)
 
@@ -167,7 +167,7 @@ class _Processor:
     def delete_doc(self, doc_ids: List[str] = None, kb_id: str = None) -> None:
         if isinstance(doc_ids, str):
             doc_ids = [doc_ids]
-        LOG.info(f"delete_doc_ids: {doc_ids}")
+        LOG.info(f'delete_doc_ids: {doc_ids}')
         self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
 
 
@@ -192,20 +192,20 @@ class DBInfo(BaseModel):
 
 class AddDocRequest(BaseModel):
     task_id: str
-    algo_id: Optional[str] = "__default__"
+    algo_id: Optional[str] = '__default__'
     file_infos: List[FileInfo]
     db_info: Optional[DBInfo] = None
     feedback_url: Optional[str] = None
 
 
 class UpdateMetaRequest(BaseModel):
-    algo_id: Optional[str] = "__default__"
+    algo_id: Optional[str] = '__default__'
     file_infos: List[FileInfo]
     db_info: Optional[DBInfo] = None
 
 
 class DeleteDocRequest(BaseModel):
-    algo_id: Optional[str] = "__default__"
+    algo_id: Optional[str] = '__default__'
     dataset_id: str
     doc_ids: List[str]
     db_info: Optional[DBInfo] = None
@@ -227,16 +227,16 @@ class DocumentProcessor(ModuleBase):
                 self._feedback_url = config['process_feedback_service']
                 self._path_prefix = config['process_path_prefix']
             except Exception as e:
-                LOG.warning(f"Failed to get config: {e}, use env variables instead")
-                self._feedback_url = os.getenv("PROCESS_FEEDBACK_SERVICE", None)
-                self._path_prefix = os.getenv("PROCESS_PATH_PREFIX", None)
-            self._queue_get_url = os.getenv("RAG_FILE_QUEUE_GET_URL", None)
+                LOG.warning(f'Failed to get config: {e}, use env variables instead')
+                self._feedback_url = os.getenv('PROCESS_FEEDBACK_SERVICE', None)
+                self._path_prefix = os.getenv('PROCESS_PATH_PREFIX', None)
+            self._queue_get_url = os.getenv('RAG_FILE_QUEUE_GET_URL', None)
 
         def _init_components(self, server: bool):
             if server and not self._inited:
                 self._tasks = {}    # running tasks
                 self._pending_task_ids = set()  # pending task ids
-                self._max_workers = int(os.getenv("RAG_PROCESS_MAX_WORKERS", '8'))
+                self._max_workers = int(os.getenv('RAG_PROCESS_MAX_WORKERS', '8'))
                 self._task_queue = queue.Queue(maxsize=2 * self._max_workers)
 
                 self._add_executor = ThreadPoolExecutor(max_workers=self._max_workers)
@@ -254,21 +254,21 @@ class DocumentProcessor(ModuleBase):
 
                 if self._queue_get_url:
                     self._poller_id = 'worker_' + subprocess.check_output(['hostname', '-i']).decode().strip()
-                    self._poll_interval = float(os.getenv("RAG_PROCESS_POLL_INTERVAL", '1.0'))
+                    self._poll_interval = float(os.getenv('RAG_PROCESS_POLL_INTERVAL', '1.0'))
                     self._poller_thread = threading.Thread(target=self._poller, daemon=True)
                     self._poller_thread.start()
                 try:
                     signal.signal(signal.SIGTERM, lambda *_: self._begin_shutdown())
                 except Exception as e:
-                    LOG.error(f"[DocumentProcessor] Failed to register signal handler: {e}")
+                    LOG.error(f'[DocumentProcessor] Failed to register signal handler: {e}')
                     try:
                         import atexit
                         atexit.register(self._begin_shutdown)
                     except Exception as e:
-                        LOG.error(f"[DocumentProcessor] Failed to register atexit handler: {e}")
+                        LOG.error(f'[DocumentProcessor] Failed to register atexit handler: {e}')
 
             self._inited = True
-            LOG.info(f"[DocumentProcessor] init done. feedback_url {self._feedback_url}, prefix {self._path_prefix}")
+            LOG.info(f'[DocumentProcessor] init done. feedback_url {self._feedback_url}, prefix {self._path_prefix}')
 
         def register_algorithm(self, name: str, store: _DocumentStore, reader: ReaderBase,
                                node_groups: Dict[str, Dict], display_name: Optional[str] = None,
@@ -289,7 +289,7 @@ class DocumentProcessor(ModuleBase):
         def _begin_shutdown(self):
             if self._draining:
                 return
-            LOG.info("[DocumentProcessor] Draining...")
+            LOG.info('[DocumentProcessor] Draining...')
             self._draining = True
             self._stop_event.set()
             threading.Thread(target=self._graceful_shutdown, daemon=True).start()
@@ -306,12 +306,12 @@ class DocumentProcessor(ModuleBase):
             return self._inspectors[url]
 
         def _get_url_from_db_info(self, db_info: DBInfo):
-            return (f"mysql+pymysql://{db_info.user}:{db_info.password}"
-                    f"@{db_info.host}:{db_info.port}/{db_info.db_name}"
-                    "?charset=utf8mb4")
+            return (f'mysql+pymysql://{db_info.user}:{db_info.password}'
+                    f'@{db_info.host}:{db_info.port}/{db_info.db_name}'
+                    '?charset=utf8mb4')
 
         def create_table(self, db_info: DBInfo):
-            if db_info.db_type == "mysql":
+            if db_info.db_type == 'mysql':
                 try:
                     url = self._get_url_from_db_info(db_info)
                     engine = self._get_engine(url=url)
@@ -328,20 +328,20 @@ class DocumentProcessor(ModuleBase):
                                       Column('creater', String(255), nullable=False),
                                       Column('dataset_id', String(255), nullable=False),
                                       Column('tags', JSON, nullable=True),
-                                      Column('created_at', TIMESTAMP, server_default=text("CURRENT_TIMESTAMP")))
+                                      Column('created_at', TIMESTAMP, server_default=text('CURRENT_TIMESTAMP')))
                         metadata.create_all(engine, tables=[table])
-                        LOG.info(f"Created table `{tbl}` in `{schema}`")
+                        LOG.info(f'Created table `{tbl}` in `{schema}`')
                 except Exception as e:
-                    LOG.error(f"Failed to create table `{tbl}` in `{schema}`: {e}")
+                    LOG.error(f'Failed to create table `{tbl}` in `{schema}`: {e}')
                     return
             else:
-                raise ValueError(f"Unsupported database type: {db_info.db_type}")
+                raise ValueError(f'Unsupported database type: {db_info.db_type}')
 
         def operate_db(self, db_info: DBInfo, operation: str,
                        file_infos: List[FileInfo] = None, params: Dict = None) -> None:
             db_type = db_info.db_type
             if db_type not in DB_TYPES:
-                raise ValueError(f"Unsupported db_type: {db_type}")
+                raise ValueError(f'Unsupported db_type: {db_type}')
             url = self._get_url_from_db_info(db_info)
             engine = self._get_engine(url=url)
             if operation == 'upsert':
@@ -349,7 +349,7 @@ class DocumentProcessor(ModuleBase):
             elif operation == 'delete':
                 self._delete_records(engine, db_info, params)
             else:
-                raise ValueError(f"Unsupported operation: {operation}")
+                raise ValueError(f'Unsupported operation: {operation}')
 
         def _upsert_records(self, engine, db_info, file_infos):
             table_name = db_info['table_name']
@@ -358,16 +358,16 @@ class DocumentProcessor(ModuleBase):
             table = metadata.tables[table_name]
             with engine.begin() as conn:
                 for file_info in file_infos:
-                    document_id = file_info.get("doc_id")
-                    file_path = file_info.get("file_path")
+                    document_id = file_info.get('doc_id')
+                    file_path = file_info.get('file_path')
                     if not document_id or not file_path:
-                        raise ValueError(f"Invalid file_info: {file_info}")
+                        raise ValueError(f'Invalid file_info: {file_info}')
 
-                    raw_infos = {"document_id": document_id, "file_name": os.path.basename(file_path),
-                                 "file_path": file_path, "description": file_info["metadata"].get("description", None),
-                                 "creater": file_info["metadata"].get("creater", None),
-                                 "dataset_id": file_info["metadata"].get(RAG_KB_ID, None),
-                                 "tags": file_info["metadata"].get("tags", []) or []}
+                    raw_infos = {'document_id': document_id, 'file_name': os.path.basename(file_path),
+                                 'file_path': file_path, 'description': file_info['metadata'].get('description', None),
+                                 'creater': file_info['metadata'].get('creater', None),
+                                 'dataset_id': file_info['metadata'].get(RAG_KB_ID, None),
+                                 'tags': file_info['metadata'].get('tags', []) or []}
                     infos = {}
                     for k, v in raw_infos.items():
                         if v is None:
@@ -377,8 +377,8 @@ class DocumentProcessor(ModuleBase):
                         if isinstance(v, (list, dict)) and not v:
                             continue
                         infos[k] = v
-                    if "document_id" not in infos:
-                        infos["document_id"] = document_id
+                    if 'document_id' not in infos:
+                        infos['document_id'] = document_id
 
                     stmt = mysql_insert(table).values(**infos)
                     update_dict = {k: stmt.inserted[k] for k in infos if k != 'document_id'}
@@ -392,7 +392,7 @@ class DocumentProcessor(ModuleBase):
             table = metadata.tables[table_name]
 
             with engine.begin() as conn:  # 自动提交或回滚事务
-                doc_ids = params.get("doc_ids", [])
+                doc_ids = params.get('doc_ids', [])
                 for document_id in doc_ids:
                     stmt = delete(table).where(table.c.document_id == document_id)
                     conn.execute(stmt)
@@ -410,12 +410,9 @@ class DocumentProcessor(ModuleBase):
 
         def _poller(self):
             if not self._queue_get_url:
-                LOG.warning("[DocumentProcessor - _poller] queue_get_url not set, poller disabled")
+                LOG.warning('[DocumentProcessor - _poller] queue_get_url not set, poller disabled')
                 return
-            headers = {"Accept": "application/json"}
-            # if self._auth_token:
-            #     headers["Authorization"] = f"Bearer {self._auth_token}"
-
+            headers = {'Accept': 'application/json'}
             empty_backoff = self._poll_interval
             while not self._stop_event.is_set() and not self._draining:
                 active = sum(1 for (fut, _) in list(self._tasks.values()) if fut and not fut.done())
@@ -434,38 +431,37 @@ class DocumentProcessor(ModuleBase):
 
                     resp.raise_for_status()
                     data = resp.json()
-                    task = data.get("task", {})
-                    worker_id = task.get("worker_id")
+                    task = data.get('task', {})
+                    worker_id = task.get('worker_id')
 
                     if not task:
                         time.sleep(empty_backoff)
                         empty_backoff = min(empty_backoff * 1.5, 5.0)
                         continue
-
+                    LOG.info(f'[Poller] resp {data}')
                     if worker_id != self._poller_id:
-                        LOG.warning(f"[Poller] task is not for this worker {self._poller_id}, task {task}")
-                        time.sleep(empty_backoff)
-                        empty_backoff = min(empty_backoff * 1.5, 5.0)
+                        LOG.warning(f'[Poller] task is not for this worker {self._poller_id} !'
+                                    f' Current worker {worker_id}')
                         continue
 
-                    task_id = task.get("task_id")
-                    algo_id = task.get("algo_id")
-                    db_info = task.get("db_info")
-                    feedback_url = task.get("feedback_url")
-                    file_infos = task.get("file_infos")
-                    params = {"file_infos": file_infos, "db_info": db_info, "feedback_url": feedback_url}
+                    task_id = task.get('task_id')
+                    algo_id = task.get('algo_id')
+                    db_info = task.get('db_info')
+                    feedback_url = task.get('feedback_url')
+                    file_infos = task.get('file_infos')
+                    params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
 
                     if ENABLE_DB and db_info is not None:
                         self.create_table(db_info=db_info)
 
                     self._pending_task_ids.add(task_id)
                     self._task_queue.put(('add', algo_id, task_id, params))
-                    LOG.info(f"[Poller] task {task_id} pulled, params {params}")
+                    LOG.info(f'[Poller] task {task_id} pulled, params {params}')
                     empty_backoff = self._poll_interval
                 except Exception as e:
-                    LOG.error(f"[Poller] fetch failed: {e}")
+                    LOG.error(f'[Poller] fetch failed: {e}')
                     time.sleep(min(self._poll_interval * 2, 5.0) + random.random() * 0.5)
-            LOG.info("[Poller] stopped")
+            LOG.info('[Poller] stopped')
 
         def _graceful_shutdown(self, wait_sec: int = 10):
             deadline = time.time() + wait_sec
@@ -480,11 +476,11 @@ class DocumentProcessor(ModuleBase):
                     try:
                         future.cancel()
                     except Exception as e:
-                        LOG.error(f"[Poller] cancel task {task_id} failed: {e}")
+                        LOG.error(f'[Poller] cancel task {task_id} failed: {e}')
                     if callback_path:
                         self._send_status_message(task_id, callback_path, success=False,
-                                                  error_code="Shutdown", error_msg="pod is draining")
-                    LOG.warning(f"[Shutdown] task {task_id} canceled and failed")
+                                                  error_code='Shutdown', error_msg='pod is draining')
+                    LOG.warning(f'[Shutdown] task {task_id} canceled and failed')
                 self._tasks.pop(task_id, None)
             while not self._task_queue.empty():
                 task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
@@ -492,44 +488,44 @@ class DocumentProcessor(ModuleBase):
                     callback_path = params.get('feedback_url')
                     if callback_path:
                         self._send_status_message(task_id, callback_path, success=False,
-                                                  error_code="Shutdown", error_msg="pod is draining")
+                                                  error_code='Shutdown', error_msg='pod is draining')
                 self._pending_task_ids.discard(task_id)
-            LOG.info("[Shutdown] drain completed")
+            LOG.info('[Shutdown] drain completed')
 
         @app.get('/algo/list')
         async def get_algo_list(self) -> None:
             res = []
             for algo_id, processor in self._processors.items():
-                res.append({"algo_id": algo_id, "display_name": processor._display_name,
-                            "description": processor._description})
+                res.append({'algo_id': algo_id, 'display_name': processor._display_name,
+                            'description': processor._description})
             return BaseResponse(code=200, msg='success', data=res)
 
         @app.get('/group/info')
         async def get_group_info(self, algo_id: str) -> None:
             if algo_id not in self._processors:
-                return BaseResponse(code=400, msg=f"Invalid algo_id {algo_id}")
+                return BaseResponse(code=400, msg=f'Invalid algo_id {algo_id}')
             processor = self._processors[algo_id]
             infos = []
             for group_name in processor._store.activated_groups():
                 if group_name in processor._node_groups:
-                    group_info = {"name": group_name, "type": processor._node_groups[group_name].get('group_type'),
-                                  "display_name": processor._node_groups[group_name].get('display_name')}
+                    group_info = {'name': group_name, 'type': processor._node_groups[group_name].get('group_type'),
+                                  'display_name': processor._node_groups[group_name].get('display_name')}
                     infos.append(group_info)
-            LOG.info(f"Get group info for {algo_id} success with {infos}")
+            LOG.info(f'Get group info for {algo_id} success with {infos}')
             return BaseResponse(code=200, msg='success', data=infos)
 
         @app.post('/doc/add')
         async def async_add_doc(self, request: AddDocRequest):
             if self._draining:
                 return BaseResponse(code=503, msg='draining')
-            LOG.info(f"Add doc for {request.model_dump_json()}")
+            LOG.info(f'Add doc for {request.model_dump_json()}')
             task_id = request.task_id
             algo_id = request.algo_id
             file_infos = request.file_infos
             db_info = request.db_info
             feedback_url = request.feedback_url
             if algo_id not in self._processors:
-                return BaseResponse(code=400, msg=f"Invalid algo_id {algo_id}")
+                return BaseResponse(code=400, msg=f'Invalid algo_id {algo_id}')
             if task_id in self._pending_task_ids or task_id in self._tasks:
                 return BaseResponse(code=400, msg=f'The task {task_id} already exists in queue', data=None)
             if self._path_prefix:
@@ -538,24 +534,24 @@ class DocumentProcessor(ModuleBase):
                         else file_info.file_path
                     file_info.file_path = create_file_path(path=source_path, prefix=self._path_prefix)
 
-            params = {"file_infos": file_infos, "db_info": db_info, "feedback_url": feedback_url}
+            params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
             if ENABLE_DB and db_info is not None:
                 self.create_table(db_info=db_info)
             self._pending_task_ids.add(task_id)
             self._task_queue.put(('add', algo_id, task_id, params))
-            return BaseResponse(code=200, msg='task submit successfully', data={"task_id": task_id})
+            return BaseResponse(code=200, msg='task submit successfully', data={'task_id': task_id})
 
         @app.post('/doc/meta/update')
         async def async_update_meta(self, request: UpdateMetaRequest):
             if self._draining:
                 return BaseResponse(code=503, msg='draining')
-            LOG.info(f"update doc meta for {request.model_dump_json()}")
+            LOG.info(f'update doc meta for {request.model_dump_json()}')
             algo_id = request.algo_id
             file_infos = request.file_infos
             db_info = request.db_info
 
             if algo_id not in self._processors:
-                return BaseResponse(code=400, msg=f"Invalid algo_id {algo_id}")
+                return BaseResponse(code=400, msg=f'Invalid algo_id {algo_id}')
 
             for file_info in file_infos:
                 doc_id = file_info.doc_id
@@ -563,7 +559,7 @@ class DocumentProcessor(ModuleBase):
                 old_fut = self._update_futures.get(doc_id)
                 if old_fut and not old_fut.done():
                     cancelled = old_fut.cancel()
-                    LOG.info(f"Canceled previous update for {doc_id}: {cancelled}")
+                    LOG.info(f'Canceled previous update for {doc_id}: {cancelled}')
 
                 new_fut = self._update_executor.submit(self._processors[algo_id].update_doc_meta, doc_id=doc_id,
                                                        metadata=metadata)
@@ -584,20 +580,20 @@ class DocumentProcessor(ModuleBase):
         async def async_delete_doc(self, request: DeleteDocRequest) -> None:
             if self._draining:
                 return BaseResponse(code=503, msg='draining')
-            LOG.info(f"Del doc for {request.model_dump_json()}")
+            LOG.info(f'Del doc for {request.model_dump_json()}')
             algo_id = request.algo_id
             dataset_id = request.dataset_id
             doc_ids = request.doc_ids
             db_info = request.db_info
 
             if algo_id not in self._processors:
-                return BaseResponse(code=400, msg=f"Invalid algo_id {algo_id}")
+                return BaseResponse(code=400, msg=f'Invalid algo_id {algo_id}')
 
             task_id = str(uuid.uuid4())
             self._pending_task_ids.add(task_id)
             self._task_queue.put(('delete', algo_id, task_id,
-                                  {"dataset_id": dataset_id, "doc_ids": doc_ids, "db_info": db_info}))
-            return BaseResponse(code=200, msg='task submit successfully', data={"task_id": task_id})
+                                  {'dataset_id': dataset_id, 'doc_ids': doc_ids, 'db_info': db_info}))
+            return BaseResponse(code=200, msg='task submit successfully', data={'task_id': task_id})
 
         @app.post('/doc/cancel')
         async def cancel_task(self, request: CancelDocRequest):
@@ -616,17 +612,17 @@ class DocumentProcessor(ModuleBase):
                         self._tasks.pop(task_id, None)
                 else:
                     status = 0
-            return BaseResponse(code=200, msg="success" if status else "failed",
-                                data={"task_id": task_id, "status": status})
+            return BaseResponse(code=200, msg='success' if status else 'failed',
+                                data={'task_id': task_id, 'status': status})
 
         def _send_status_message(self, task_id: str, callback_path: str, success: bool,
-                                 error_code: str = "", error_msg: str = ""):
+                                 error_code: str = '', error_msg: str = ''):
             if self._feedback_url:
                 try:
                     full_url = self._feedback_url + callback_path
-                    payload = {"task_id": task_id, "status": 1 if success else 0, "error_code": error_code,
-                               "error_msg": error_msg}
-                    headers = {"Content-Type": "application/json"}
+                    payload = {'task_id': task_id, 'status': 1 if success else 0, 'error_code': error_code,
+                               'error_msg': error_msg}
+                    headers = {'Content-Type': 'application/json'}
                     res = None
                     for wait_time in fibonacci_backoff(max_retries=3):
                         try:
@@ -634,18 +630,18 @@ class DocumentProcessor(ModuleBase):
                             if res.status_code == 200:
                                 break
                             LOG.warning(
-                                f"Task-{task_id}: Unexpected status {res.status_code}, retrying in {wait_time}s…")
+                                f'Task-{task_id}: Unexpected status {res.status_code}, retrying in {wait_time}s…')
                         except Exception as e:
-                            LOG.error(f"Task-{task_id}: Request failed: {e}, retrying in {wait_time}s…")
+                            LOG.error(f'Task-{task_id}: Request failed: {e}, retrying in {wait_time}s…')
                         time.sleep(wait_time)
 
                     if res is None:
-                        raise RuntimeError("Failed to send feedback—no response received after retries")
+                        raise RuntimeError('Failed to send feedback—no response received after retries')
                     res.raise_for_status()
                 except Exception as e:
-                    LOG.error(f"Task-{task_id}: Failed to send feedback to {full_url}: {e}")
+                    LOG.error(f'Task-{task_id}: Failed to send feedback to {full_url}: {e}')
             else:
-                LOG.error("process_feedback_service is not set")
+                LOG.error('process_feedback_service is not set')
 
         def _exec_add_task(self, algo_id, task_id, params):
             try:
@@ -684,21 +680,21 @@ class DocumentProcessor(ModuleBase):
                                                        metadatas=reparse_metadatas)
                 else:
                     LOG.error(
-                        f"Task-{task_id}: add task error, no input files {input_files} or reparse group {reparse_group}"
+                        f'Task-{task_id}: add task error, no input files {input_files} or reparse group {reparse_group}'
                     )
                 self._tasks[task_id] = (future, callback_path)
                 self._pending_task_ids.remove(task_id)
             except Exception as e:
-                LOG.error(f"Task-{task_id}: add task error {e}")
+                LOG.error(f'Task-{task_id}: add task error {e}')
 
         def _exec_delete_task(self, algo_id, task_id, params):
-            dataset_id = params.get("dataset_id")
-            doc_ids = params.get("doc_ids")
+            dataset_id = params.get('dataset_id')
+            doc_ids = params.get('doc_ids')
             future = self._delete_executor.submit(
                 self._processors[algo_id].delete_doc, doc_ids=doc_ids, kb_id=dataset_id
             )
-            if ENABLE_DB and params.get("db_info") is not None:
-                db_info = params.get("db_info")
+            if ENABLE_DB and params.get('db_info') is not None:
+                db_info = params.get('db_info')
                 future.add_done_callback(lambda fut: self.operate_db(db_info, 'delete', params=params))
             self._tasks[task_id] = (future, None)
             self._pending_task_ids.remove(task_id)
@@ -711,7 +707,7 @@ class DocumentProcessor(ModuleBase):
                         continue
                     task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
                     if task_id not in self._pending_task_ids:
-                        LOG.warning(f"[Worker] drop task not in pending: {task_id} ({task_type}, {algo_id}, {params})")
+                        LOG.warning(f'[Worker] drop task not in pending: {task_id} ({task_type}, {algo_id}, {params})')
                         continue
                     if task_type == 'add':
                         self._exec_add_task(algo_id=algo_id, task_id=task_id, params=params)
@@ -726,19 +722,19 @@ class DocumentProcessor(ModuleBase):
                             ex = future.exception()
                             if callback_path and not ex:
                                 self._send_status_message(task_id=task_id, callback_path=callback_path, success=True,
-                                                          error_code="", error_msg="")
+                                                          error_code='', error_msg='')
                             elif callback_path and ex:
                                 self._send_status_message(task_id=task_id, callback_path=callback_path, success=False,
                                                           error_code=type(ex).__name__, error_msg=str(ex))
-                                LOG.error(f"task {task_id} failed: {str(ex)}")
+                                LOG.error(f'task {task_id} failed: {str(ex)}')
                             elif ex:
-                                LOG.error(f"task {task_id} failed: {str(ex)}")
+                                LOG.error(f'task {task_id} failed: {str(ex)}')
                     for task_id in task_need_pop:
                         self._tasks.pop(task_id)
-                        LOG.info(f"task {task_id} done")
+                        LOG.info(f'task {task_id} done')
                     time.sleep(0.2)
                 except Exception as e:
-                    LOG.error(f"[Worker] error: {e}")
+                    LOG.error(f'[Worker] error: {e}')
                     time.sleep(10)
                     continue
 
@@ -764,8 +760,8 @@ class DocumentProcessor(ModuleBase):
     def register_algorithm(self, name: str, store: _DocumentStore, reader: ReaderBase, node_groups: Dict[str, Dict],
                            display_name: Optional[str] = None, description: Optional[str] = None,
                            force_refresh: bool = False, **kwargs):
-        self._dispatch("register_algorithm", name, store, reader, node_groups,
+        self._dispatch('register_algorithm', name, store, reader, node_groups,
                        display_name, description, force_refresh, **kwargs)
 
     def drop_algorithm(self, name: str, clean_db: bool = False) -> None:
-        return self._dispatch("drop_algorithm", name, clean_db)
+        return self._dispatch('drop_algorithm', name, clean_db)
