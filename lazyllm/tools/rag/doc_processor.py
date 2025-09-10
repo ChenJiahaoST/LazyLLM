@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 from sqlalchemy import create_engine, Column, JSON, String, TIMESTAMP, Table, MetaData, inspect, delete, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -175,7 +175,7 @@ class FileInfo(BaseModel):
     file_path: Optional[str] = None
     transformed_file_path: Optional[str] = None
     doc_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = {}
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
     reparse_group: Optional[str] = None
 
 
@@ -352,7 +352,7 @@ class DocumentProcessor(ModuleBase):
                 raise ValueError(f'Unsupported operation: {operation}')
 
         def _upsert_records(self, engine, db_info, file_infos):
-            table_name = db_info['table_name']
+            table_name = db_info.table_name
             metadata = MetaData()
             metadata.reflect(bind=engine, only=[table_name])
             table = metadata.tables[table_name]
@@ -386,7 +386,7 @@ class DocumentProcessor(ModuleBase):
                     conn.execute(upsert_stmt)
 
         def _delete_records(self, engine, db_info, params):
-            table_name = db_info['table_name']
+            table_name = db_info.table_name
             metadata = MetaData()
             metadata.reflect(bind=engine, only=[table_name])
             table = metadata.tables[table_name]
@@ -431,6 +431,7 @@ class DocumentProcessor(ModuleBase):
 
                     resp.raise_for_status()
                     data = resp.json()
+
                     task = data.get('task', {})
                     worker_id = data.get('worker_id')
 
@@ -442,17 +443,17 @@ class DocumentProcessor(ModuleBase):
                     if worker_id != self._poller_id:
                         LOG.warning(f'[Poller] task is not for this worker {self._poller_id} !'
                                     f' Current worker {worker_id}')
-
-                    task_id = task.get('task_id')
-                    algo_id = task.get('algo_id')
-                    db_info = task.get('db_info')
-                    feedback_url = task.get('feedback_url')
-                    file_infos = task.get('file_infos')
-                    params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
+                    task_info = AddDocRequest(**task)
+                    task_id = task_info.task_id
+                    algo_id = task_info.algo_id
+                    db_info = task_info.db_info
+                    feedback_url = task_info.feedback_url
+                    file_infos = task_info.file_infos
 
                     if ENABLE_DB and db_info is not None:
                         self.create_table(db_info=db_info)
 
+                    params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
                     self._pending_task_ids.add(task_id)
                     self._task_queue.put(('add', algo_id, task_id, params))
                     LOG.info(f'[Poller] task {task_id} pulled, params {params}')
