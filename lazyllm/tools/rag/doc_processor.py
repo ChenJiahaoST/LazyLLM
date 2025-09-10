@@ -232,13 +232,13 @@ class DocumentProcessor(ModuleBase):
                 self._task_queue = queue.Queue()
                 self._tasks = {}    # running tasks
                 self._pending_task_ids = set()  # pending tasks
-                self._max_workers = os.getenv("RAG_PROCESS_MAX_WORKERS", 8)
+                self._max_workers = int(os.getenv("RAG_PROCESS_MAX_WORKERS", '8'))
                 self._add_executor = ThreadPoolExecutor(max_workers=self._max_workers)
                 self._add_futures = {}
                 self._delete_executor = ThreadPoolExecutor(max_workers=self._max_workers)
                 self._update_executor = ThreadPoolExecutor(max_workers=self._max_workers)
-                self._update_futures = {}
 
+                self._update_futures = {}
                 self._engines: dict[str, Engine] = {}
                 self._inspectors: dict[str, inspect] = {}
 
@@ -409,9 +409,8 @@ class DocumentProcessor(ModuleBase):
             params = {"file_infos": file_infos, "db_info": db_info, "feedback_url": feedback_url}
             if ENABLE_DB:
                 self.create_table(db_info=db_info)
-
-            self._task_queue.put(('add', algo_id, task_id, params))
             self._pending_task_ids.add(task_id)
+            self._task_queue.put(('add', algo_id, task_id, params))
             return BaseResponse(code=200, msg='task submit successfully', data={"task_id": task_id})
 
         @app.post('/doc/meta/update')
@@ -459,9 +458,9 @@ class DocumentProcessor(ModuleBase):
                 return BaseResponse(code=400, msg=f"Invalid algo_id {algo_id}")
 
             task_id = str(uuid.uuid4())
+            self._pending_task_ids.add(task_id)
             self._task_queue.put(('delete', algo_id, task_id,
                                   {"dataset_id": dataset_id, "doc_ids": doc_ids, "db_info": db_info}))
-            self._pending_task_ids.add(task_id)
             return BaseResponse(code=200, msg='task submit successfully', data={"task_id": task_id})
 
         @app.post('/doc/cancel')
@@ -571,6 +570,7 @@ class DocumentProcessor(ModuleBase):
                 try:
                     task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
                     if task_id not in self._pending_task_ids:
+                        LOG.warning(f"[Worker] drop task not in pending: {task_id} ({task_type}, {algo_id}, {params})")
                         continue
                     if task_type == 'add':
                         self._exec_add_task(algo_id=algo_id, task_id=task_id, params=params)
@@ -595,7 +595,11 @@ class DocumentProcessor(ModuleBase):
                     for task_id in task_need_pop:
                         self._tasks.pop(task_id)
                         LOG.info(f"task {task_id} done")
-                    time.sleep(5)
+                    time.sleep(0.2)
+                except Exception as e:
+                    LOG.error(f"[Worker] error: {e}")
+                    time.sleep(10)
+                    continue
 
         def __call__(self, func_name: str, *args, **kwargs):
             return getattr(self, func_name)(*args, **kwargs)
