@@ -1,5 +1,5 @@
 from typing import List, Optional, Union, Dict, Set, Callable
-from lazyllm import ModuleBase, once_wrapper
+from lazyllm import ModuleBase, once_wrapper, LOG
 
 from .doc_node import DocNode
 from .document import Document, UrlDocument, DocImpl
@@ -71,17 +71,22 @@ class Retriever(ModuleBase, _PostProcess):
             self, query: str, filters: Optional[Dict[str, Union[str, int, List, Set]]] = None,
             **kwargs
     ) -> Union[List[DocNode], str]:
-        self._lazy_init()
-        all_nodes: List[DocNode] = []
-        for doc in self._docs:
-            nodes = doc.forward(query=query, group_name=self._group_name, similarity=self._similarity,
-                                similarity_cut_off=self._similarity_cut_off, index=self._index,
-                                topk=self._topk, similarity_kws=self._similarity_kw, embed_keys=self._embed_keys,
-                                filters=filters, **kwargs)
-            if nodes and self._target and self._target != nodes[0]._group:
-                nodes = doc.find(self._target)(nodes)
-            all_nodes.extend(nodes)
-        return self._post_process(all_nodes)
+        try:
+            self._lazy_init()
+            all_nodes: List[DocNode] = []
+            for doc in self._docs:
+                nodes = doc.forward(query=query, group_name=self._group_name, similarity=self._similarity,
+                                    similarity_cut_off=self._similarity_cut_off, index=self._index,
+                                    topk=self._topk, similarity_kws=self._similarity_kw, embed_keys=self._embed_keys,
+                                    filters=filters, **kwargs)
+                if nodes and self._target and self._target != nodes[0]._group:
+                    nodes = doc.find(self._target)(nodes)
+                all_nodes.extend(nodes)
+            return self._post_process(all_nodes)
+        except Exception as e:
+            LOG.error(f'[Retriever] Error: {e}, group: {self._group_name}, embed: {self._embed_keys},'
+                      f' query: {query}, filters: {filters}]')
+            return []
 
 
 class TempDocRetriever(ModuleBase, _PostProcess):
