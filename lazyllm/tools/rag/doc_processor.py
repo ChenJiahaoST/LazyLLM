@@ -605,24 +605,54 @@ class DocumentProcessor(ModuleBase):
             return BaseResponse(code=200, msg='task submit successfully', data={'task_id': task_id})
 
         @app.post('/doc/cancel')
-        async def cancel_task(self, request: CancelDocRequest):
+        async def cancel_task(self, request: CancelDocRequest):  # noqa: C901
             if self._draining:
                 return BaseResponse(code=503, msg='draining')
             task_id = request.task_id
+            status = 0
+
             if task_id in self._pending_task_ids:
                 self._pending_task_ids.remove(task_id)
                 status = 1
-            elif task_id in self._tasks:
-                future = self._tasks.get(task_id)
-                if future and not future.done():
-                    cancelled = future.cancel()
-                    status = 1 if cancelled else 0
-                    if cancelled:
-                        self._tasks.pop(task_id, None)
-                else:
-                    status = 0
-            return BaseResponse(code=200, msg='success' if status else 'failed',
-                                data={'task_id': task_id, 'status': status})
+                return BaseResponse(code=200, msg='canceled (pending removed)',
+                                    data={'task_id': task_id, 'status': status})
+            if task_id not in self._tasks:
+                return BaseResponse(code=404, msg='task not found', data={'task_id': task_id, 'status': 0})
+
+            entry = self._tasks.get(task_id)
+            future = None
+
+            if hasattr(entry, 'done') and hasattr(entry, 'cancel'):
+                future = entry
+            elif isinstance(entry, tuple):
+                for part in entry:
+                    if hasattr(part, 'done') and hasattr(part, 'cancel'):
+                        future = part
+                        break
+            else:
+                LOG.error(f'[Cancel task] Invalid task entry: {entry}')
+                return BaseResponse(code=500, msg='Invalid task entry', data={'task_id': task_id, 'status': 0})
+
+            if future and not future.done():
+                cancelled = False
+                try:
+                    cancelled = bool(future.cancel())
+                except Exception as e:
+                    LOG.error(f'[Cancel task] Cancel future failed: {e}')
+                    cancelled = False
+                status = 1 if cancelled else 0
+                if cancelled:
+                    self._tasks.pop(task_id, None)
+            else:
+                status = 0
+                return BaseResponse(code=409, msg='task already finished',
+                                    data={'task_id': task_id, 'status': status})
+            if status:
+                return BaseResponse(code=200, msg='success' if status else 'failed',
+                                    data={'task_id': task_id, 'status': status})
+            else:
+                return BaseResponse(code=409, msg='task not cancelable (running or non-cooperative)',
+                                    data={'task_id': task_id, 'status': status})
 
         def _send_status_message(self, task_id: str, callback_path: str, success: bool,
                                  error_code: str = '', error_msg: str = ''):
