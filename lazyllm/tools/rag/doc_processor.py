@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 from sqlalchemy import create_engine, Column, JSON, String, TIMESTAMP, Table, MetaData, inspect, delete, text
@@ -41,8 +42,12 @@ class _Processor:
         self._description = description
 
     def add_doc(self, input_files: List[str], ids: Optional[List[str]] = None,
-                metadatas: Optional[List[Dict[str, Any]]] = None):
+                metadatas: Optional[List[Dict[str, Any]]] = None, **kwargs):
         try:
+            cancel_event = kwargs.get('cancel_event', None)
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}')
+                raise RuntimeError('Task canceled!')
             add_start_time = time.time()
             if not input_files: return
             if not ids: ids = [gen_docid(path) for path in input_files]
@@ -55,11 +60,14 @@ class _Processor:
             parse_start_time = time.time()
             root_nodes, image_nodes = self._reader.load_data(input_files, metadatas, split_image_nodes=True)
             parse_end_time = time.time()
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}')
+                raise RuntimeError('Task canceled!')
             self._store.update_nodes(self._set_nodes_number(root_nodes))
-            self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME)
+            self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME, cancel_event=cancel_event)
             if image_nodes:
                 self._store.update_nodes(self._set_nodes_number(image_nodes))
-                self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP)
+                self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP, cancel_event=cancel_event)
             add_end_time = time.time()
             LOG.info(f'[_Processor - add_doc] Add documents done! files:{input_files}, '
                      f'Total Time:{add_end_time - add_start_time}s, '
@@ -81,16 +89,19 @@ class _Processor:
             doc_group_number[doc_id][group_name] += 1
         return nodes
 
-    def _create_nodes_recursive(self, p_nodes: List[DocNode], p_name: str):
+    def _create_nodes_recursive(self, p_nodes: List[DocNode], p_name: str, **kwargs):
+        cancel_event = kwargs.get('cancel_event', None)
         for group_name in self._store.activated_groups():
             group = self._node_groups.get(group_name)
             if group is None:
                 raise ValueError(f'Node group {group_name} does not exist. Please check the group name '
                                  'or add a new one through `create_node_group`.')
-
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - _create_nodes_recursive] Task canceled! group_name:{group_name}')
+                raise RuntimeError('Task canceled!')
             if group['parent'] == p_name:
                 nodes = self._create_nodes_impl(p_nodes, group_name)
-                if nodes: self._create_nodes_recursive(nodes, group_name)
+                if nodes: self._create_nodes_recursive(nodes, group_name, cancel_event=cancel_event)
 
     def _create_nodes_impl(self, p_nodes, group_name):
         # NOTE transform.batch_forward will set children for p_nodes, but when calling
@@ -109,14 +120,22 @@ class _Processor:
         return nodes
 
     def reparse(self, group_name: str, uids: Optional[List[str]] = None, doc_ids: Optional[List[str]] = None, **kwargs):
+        cancel_event = kwargs.get('cancel_event', None)
+        if cancel_event and cancel_event.is_set():
+            LOG.info(f'[_Processor - reparse] Task canceled! group_name:{group_name}')
+            raise RuntimeError('Task canceled!')
         if doc_ids:
             self._reparse_docs(group_name=group_name, doc_ids=doc_ids, **kwargs)
         else:
             self._get_or_create_nodes(group_name, uids)
 
-    def _reparse_docs(self, group_name: str, doc_ids: List[str], doc_paths: List[str], metadatas: List[Dict]):
+    def _reparse_docs(self, group_name: str, doc_ids: List[str], doc_paths: List[str], metadatas: List[Dict], **kwargs):
+        cancel_event = kwargs.get('cancel_event', None)
         kb_id = metadatas[0].get(RAG_KB_ID, None)
         if group_name == 'all':
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - _reparse_docs] Task canceled! group_name:{group_name}')
+                raise RuntimeError('Task canceled!')
             self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
             removed_flag = False
             for wait_time in fibonacci_backoff():
@@ -127,18 +146,25 @@ class _Processor:
                 time.sleep(wait_time)
             if not removed_flag:
                 raise Exception(f'Failed to remove nodes for docs {doc_ids} from store')
-            self.add_doc(input_files=doc_paths, ids=doc_ids, metadatas=metadatas)
+            self.add_doc(input_files=doc_paths, ids=doc_ids, metadatas=metadatas, cancel_event=cancel_event)
         else:
             p_nodes = self._store.get_nodes(group=self._node_groups[group_name]['parent'],
                                             kb_id=kb_id, doc_ids=doc_ids)
-            self._reparse_group_recursive(p_nodes=p_nodes, cur_name=group_name, doc_ids=doc_ids)
+            self._reparse_group_recursive(p_nodes=p_nodes, cur_name=group_name, doc_ids=doc_ids,
+                                          cancel_event=cancel_event)
 
-    def _reparse_group_recursive(self, p_nodes: List[DocNode], cur_name: str, doc_ids: List[str]):
+    def _reparse_group_recursive(self, p_nodes: List[DocNode], cur_name: str, doc_ids: List[str], **kwargs):
+        cancel_event = kwargs.get('cancel_event', None)
         kb_id = p_nodes[0].global_metadata.get(RAG_KB_ID, None)
         self._store.remove_nodes(group=cur_name, kb_id=kb_id, doc_ids=doc_ids)
-
+        if cancel_event and cancel_event.is_set():
+            LOG.info(f'[_Processor - _reparse_group_recursive] Task canceled! cur_name:{cur_name}')
+            raise RuntimeError('Task canceled!')
         removed_flag = False
         for wait_time in fibonacci_backoff():
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - _reparse_group_recursive] Task canceled! cur_name:{cur_name}')
+                raise RuntimeError('Task canceled!')
             nodes = self._store.get_nodes(group=cur_name, kb_id=kb_id, doc_ids=doc_ids)
             if not nodes:
                 removed_flag = True
@@ -151,6 +177,9 @@ class _Processor:
         transform = AdaptiveTransform(t) if isinstance(t, list) or t.pattern else make_transform(t, cur_name)
         nodes = transform.batch_forward(p_nodes, cur_name)
         # reparse need set global_metadata
+        if cancel_event and cancel_event.is_set():
+            LOG.info(f'[_Processor - _reparse_group_recursive] Task canceled! cur_name:{cur_name}')
+            raise RuntimeError('Task canceled!')
         self._store.update_nodes(self._set_nodes_number(nodes))
 
         for group_name in self._store.activated_groups():
@@ -158,8 +187,12 @@ class _Processor:
             if group is None:
                 raise ValueError(f'Node group {group_name} does not exist. Please check the group name '
                                  'or add a new one through `create_node_group`.')
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - _reparse_group_recursive] Task canceled! cur_name:{cur_name}')
+                raise RuntimeError('Task canceled!')
             if group['parent'] == cur_name:
-                self._reparse_group_recursive(p_nodes=nodes, cur_name=group_name, doc_ids=doc_ids)
+                self._reparse_group_recursive(p_nodes=nodes, cur_name=group_name, doc_ids=doc_ids,
+                                              cancel_event=cancel_event)
 
     def update_doc_meta(self, doc_id: str, metadata: dict):
         self._store.update_doc_meta(doc_id=doc_id, metadata=metadata)
@@ -236,6 +269,9 @@ class DocumentProcessor(ModuleBase):
             if server and not self._inited:
                 self._tasks = {}    # running tasks
                 self._pending_task_ids = set()  # pending task ids
+                self._cancel_tokens: dict[str, threading.Event] = {}
+                self._lock = threading.Lock()
+
                 self._max_workers = int(os.getenv('RAG_PROCESS_MAX_WORKERS', '8'))
                 self._task_queue = queue.Queue(maxsize=2 * self._max_workers)
 
@@ -463,7 +499,8 @@ class DocumentProcessor(ModuleBase):
                             file_info.file_path = create_file_path(path=source_path, prefix=self._path_prefix)
 
                     params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
-                    self._pending_task_ids.add(task_id)
+                    with self._lock:
+                        self._pending_task_ids.add(task_id)
                     self._task_queue.put(('add', algo_id, task_id, params))
                     LOG.info(f'[Poller] task {task_id} pulled, params {params}')
                     empty_backoff = self._poll_interval
@@ -482,15 +519,10 @@ class DocumentProcessor(ModuleBase):
 
             for task_id, (future, callback_path) in list(self._tasks.items()):
                 if future and not future.done():
-                    try:
-                        future.cancel()
-                    except Exception as e:
-                        LOG.error(f'[Poller] cancel task {task_id} failed: {e}')
-                    if callback_path:
-                        self._send_status_message(task_id, callback_path, success=False,
-                                                  error_code='Shutdown', error_msg='pod is draining')
-                    LOG.warning(f'[Shutdown] task {task_id} canceled and failed')
-                self._tasks.pop(task_id, None)
+                    tok = self._cancel_tokens.get(task_id)
+                    if tok: tok.set()
+                    LOG.warning(f'[Shutdown] cancel requested for running task {task_id}')
+
             while not self._task_queue.empty():
                 task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
                 if task_type == 'add':
@@ -498,7 +530,9 @@ class DocumentProcessor(ModuleBase):
                     if callback_path:
                         self._send_status_message(task_id, callback_path, success=False,
                                                   error_code='Shutdown', error_msg='pod is draining')
-                self._pending_task_ids.discard(task_id)
+
+                with self._lock:
+                    self._pending_task_ids.discard(task_id)
             LOG.info('[Shutdown] drain completed')
 
         @app.get('/algo/list')
@@ -607,21 +641,22 @@ class DocumentProcessor(ModuleBase):
         @app.post('/doc/cancel')
         async def cancel_task(self, request: CancelDocRequest):  # noqa: C901
             if self._draining:
-                return BaseResponse(code=503, msg='draining')
+                LOG.warning('[Cancel task] system is draining')
+                raise HTTPException(status_code=503, detail='system is draining')
             task_id = request.task_id
-            status = 0
-
+            data = {'task_id': task_id, 'status': 0, 'task_status': 0, 'message': 'canceled'}
             if task_id in self._pending_task_ids:
-                self._pending_task_ids.remove(task_id)
-                status = 1
-                return BaseResponse(code=200, msg='canceled (pending removed)',
-                                    data={'task_id': task_id, 'status': status})
+                with self._lock:
+                    self._pending_task_ids.remove(task_id)
+                data['status'] = 1
+                data['message'] = 'canceled (pending removed)'
+                LOG.info(f'[Cancel task] task {task_id} canceled (pending removed)')
+                return BaseResponse(code=200, msg='success', data=data)
             if task_id not in self._tasks:
-                return BaseResponse(code=404, msg='task not found', data={'task_id': task_id, 'status': 0})
-
+                LOG.warning(f'[Cancel task] task {task_id} not found')
+                raise HTTPException(status_code=404, detail='task not found')
             entry = self._tasks.get(task_id)
             future = None
-
             if hasattr(entry, 'done') and hasattr(entry, 'cancel'):
                 future = entry
             elif isinstance(entry, tuple):
@@ -631,28 +666,75 @@ class DocumentProcessor(ModuleBase):
                         break
             else:
                 LOG.error(f'[Cancel task] Invalid task entry: {entry}')
-                return BaseResponse(code=500, msg='Invalid task entry', data={'task_id': task_id, 'status': 0})
+                raise HTTPException(status_code=500, detail='Invalid task entry')
 
             if future and not future.done():
-                cancelled = False
+                cancel_token = self._cancel_tokens.get(task_id)
+                if cancel_token:
+                    cancel_token.set()
+                data['status'] = 1
+                data['message'] = 'canceled'
+                LOG.info(f'[Cancel task] task {task_id} canceled')
+                return BaseResponse(code=200, msg='success', data=data)
+            else:
                 try:
-                    cancelled = bool(future.cancel())
+                    if future.cancelled():
+                        data['status'] = 1
+                        data['message'] = 'canceled'
+                        LOG.info(f'[Cancel task] task {task_id} canceled')
+                        return BaseResponse(code=200, msg='success', data=data)
+                    else:
+                        data['status'] = 0
+                        data['message'] = 'finished'
+                        ex = future.exception()
+                        if ex:
+                            data['task_status'] = 2
+                            data['message'] = str(ex)
+                        else:
+                            data['task_status'] = 1
+                        LOG.info(f'[Cancel task] task {task_id} already finished')
+                        return BaseResponse(code=200, msg='task already finished', data=data)
                 except Exception as e:
-                    LOG.error(f'[Cancel task] Cancel future failed: {e}')
-                    cancelled = False
-                status = 1 if cancelled else 0
-                if cancelled:
+                    LOG.error(f'[Cancel task] error: {e}')
+                    raise HTTPException(status_code=500, detail=f'error: {e}')
+
+        def _attach_done(self, task_id, future, callback_path, db_info=None, file_infos=None):
+            def _on_done(fut):
+                ok = False
+                err = ""
+                try:
+                    if fut.cancelled():
+                        err = "canceled"
+                    else:
+                        ex = fut.exception()
+                        if ex:
+                            err = str(ex)
+                        else:
+                            ok = True
+                except Exception as e:
+                    err = f'exception() failed: {e}'
+
+                try:
+                    if ok and ENABLE_DB and db_info is not None and file_infos is not None:
+                        self.operate_db(db_info, 'upsert', file_infos=file_infos)
+                except Exception as e:
+                    LOG.error(f'[DoneCB] DB upsert failed for {task_id}: {e}')
+                    ok = False
+                    err = f'DB upsert failed: {e}'
+
+                with self._lock:
                     self._tasks.pop(task_id, None)
-            else:
-                status = 0
-                return BaseResponse(code=409, msg='task already finished',
-                                    data={'task_id': task_id, 'status': status})
-            if status:
-                return BaseResponse(code=200, msg='success' if status else 'failed',
-                                    data={'task_id': task_id, 'status': status})
-            else:
-                return BaseResponse(code=409, msg='task not cancelable (running or non-cooperative)',
-                                    data={'task_id': task_id, 'status': status})
+                    self._cancel_tokens.pop(task_id, None)
+                if callback_path:
+                    try:
+                        self._send_status_message(
+                            task_id, callback_path, success=ok,
+                            error_code='' if ok else ('Canceled' if err == 'canceled' else 'Exception'),
+                            error_msg='' if ok else err
+                        )
+                    except Exception as e:
+                        LOG.error(f'[DoneCB] send_status_message failed for {task_id}: {e}')
+            future.add_done_callback(_on_done)
 
         def _send_status_message(self, task_id: str, callback_path: str, success: bool,
                                  error_code: str = '', error_msg: str = ''):
@@ -708,21 +790,25 @@ class DocumentProcessor(ModuleBase):
                         ids.append(file_info.doc_id)
                         metadatas.append(file_info.metadata)
 
+                token = threading.Event()
+                with self._lock:
+                    self._cancel_tokens[task_id] = token
                 if input_files:
                     future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=input_files,
-                                                       ids=ids, metadatas=metadatas)
-                    if ENABLE_DB and db_info is not None:
-                        future.add_done_callback(lambda fut: self.operate_db(db_info, 'upsert', file_infos=file_infos))
+                                                       ids=ids, metadatas=metadatas, cancel_event=token)
                 elif reparse_group:
                     future = self._add_executor.submit(self._processors[algo_id].reparse, group_name=reparse_group,
                                                        doc_ids=reparse_doc_ids, doc_paths=reparse_files,
-                                                       metadatas=reparse_metadatas)
+                                                       metadatas=reparse_metadatas, cancel_event=token)
                 else:
                     LOG.error(
                         f'Task-{task_id}: add task error, no input files {input_files} or reparse group {reparse_group}'
                     )
-                self._tasks[task_id] = (future, callback_path)
-                self._pending_task_ids.remove(task_id)
+                with self._lock:
+                    self._tasks[task_id] = (future, callback_path)
+                    self._pending_task_ids.remove(task_id)
+                self._attach_done(task_id=task_id, future=future, callback_path=callback_path,
+                                  db_info=db_info, file_infos=file_infos)
             except Exception as e:
                 LOG.error(f'Task-{task_id}: add task error {e}')
 
@@ -736,7 +822,8 @@ class DocumentProcessor(ModuleBase):
                 db_info = params.get('db_info')
                 future.add_done_callback(lambda fut: self.operate_db(db_info, 'delete', params=params))
             self._tasks[task_id] = (future, None)
-            self._pending_task_ids.remove(task_id)
+            with self._lock:
+                self._pending_task_ids.remove(task_id)
 
         def _worker(self):  # noqa: C901
             while True:
@@ -745,32 +832,17 @@ class DocumentProcessor(ModuleBase):
                         time.sleep(0.2)
                         continue
                     task_type, algo_id, task_id, params = self._task_queue.get(timeout=1)
-                    if task_id not in self._pending_task_ids:
-                        LOG.warning(f'[Worker] drop task not in pending: {task_id} ({task_type}, {algo_id}, {params})')
-                        continue
+                    with self._lock:
+                        if task_id not in self._pending_task_ids:
+                            LOG.warning(f'[Worker] drop task not in pending: {task_id} ({task_type},'
+                                        f' {algo_id}, {params})')
+                            continue
                     if task_type == 'add':
                         self._exec_add_task(algo_id=algo_id, task_id=task_id, params=params)
                     elif task_type == 'delete':
                         self._exec_delete_task(algo_id=algo_id, task_id=task_id, params=params)
                     time.sleep(0.2)
                 except queue.Empty:
-                    task_need_pop = []
-                    for task_id, (future, callback_path) in list(self._tasks.items()):
-                        if future.done():
-                            task_need_pop.append(task_id)
-                            ex = future.exception()
-                            if callback_path and not ex:
-                                self._send_status_message(task_id=task_id, callback_path=callback_path, success=True,
-                                                          error_code='', error_msg='')
-                            elif callback_path and ex:
-                                self._send_status_message(task_id=task_id, callback_path=callback_path, success=False,
-                                                          error_code=type(ex).__name__, error_msg=str(ex))
-                                LOG.error(f'task {task_id} failed: {str(ex)}')
-                            elif ex:
-                                LOG.error(f'task {task_id} failed: {str(ex)}')
-                    for task_id in task_need_pop:
-                        self._tasks.pop(task_id)
-                        LOG.info(f'task {task_id} done')
                     time.sleep(0.2)
                 except Exception as e:
                     LOG.error(f'[Worker] error: {e}')
