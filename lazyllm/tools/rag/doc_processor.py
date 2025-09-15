@@ -650,7 +650,7 @@ class DocumentProcessor(ModuleBase):
                     self._pending_task_ids.remove(task_id)
                 data['status'] = 1
                 data['message'] = 'canceled (pending removed)'
-                LOG.info(f'[Cancel task] task {task_id} canceled (pending removed)')
+                LOG.info(f'[Cancel task] task {task_id} canceled (pending removed), data: {data}')
                 return BaseResponse(code=200, msg='success', data=data)
             if task_id not in self._tasks:
                 LOG.warning(f'[Cancel task] task {task_id} not found')
@@ -674,14 +674,14 @@ class DocumentProcessor(ModuleBase):
                     cancel_token.set()
                 data['status'] = 1
                 data['message'] = 'canceled'
-                LOG.info(f'[Cancel task] task {task_id} canceled')
+                LOG.info(f'[Cancel task] task {task_id} canceled, data: {data}')
                 return BaseResponse(code=200, msg='success', data=data)
             else:
                 try:
                     if future.cancelled():
                         data['status'] = 1
                         data['message'] = 'canceled'
-                        LOG.info(f'[Cancel task] task {task_id} canceled')
+                        LOG.info(f'[Cancel task] task {task_id} canceled, data: {data}')
                         return BaseResponse(code=200, msg='success', data=data)
                     else:
                         data['status'] = 0
@@ -692,7 +692,7 @@ class DocumentProcessor(ModuleBase):
                             data['message'] = str(ex)
                         else:
                             data['task_status'] = 1
-                        LOG.info(f'[Cancel task] task {task_id} already finished')
+                        LOG.info(f'[Cancel task] task {task_id} already finished, data: {data}')
                         return BaseResponse(code=200, msg='task already finished', data=data)
                 except Exception as e:
                     LOG.error(f'[Cancel task] error: {e}')
