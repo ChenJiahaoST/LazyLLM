@@ -72,6 +72,14 @@ class _Processor:
             LOG.info(f'[_Processor - add_doc] Add documents done! files:{input_files}, '
                      f'Total Time:{add_end_time - add_start_time}s, '
                      f'Parse Time:{parse_end_time - parse_start_time}s')
+        except RuntimeError as e:
+            if 'Task canceled!' in str(e):
+                LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}, ids:{ids}, metadatas:{metadatas}')
+                kb_id = metadatas[0].get(RAG_KB_ID, None)
+                self._store.remove_nodes(doc_ids=ids, kb_id=kb_id)
+            else:
+                LOG.error(f'Add documents failed: {e}, {traceback.format_exc()}')
+            raise e
         except Exception as e:
             LOG.error(f'Add documents failed: {e}, {traceback.format_exc()}')
             raise e
