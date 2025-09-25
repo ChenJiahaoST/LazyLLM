@@ -1,3 +1,11 @@
+import queue
+import threading
+import time
+import requests
+import uuid
+import os
+import traceback
+
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
 from sqlalchemy import create_engine, Column, JSON, String, TIMESTAMP, Table, MetaData, inspect, delete, text
@@ -15,15 +23,8 @@ from .doc_node import DocNode
 from .utils import gen_docid, ensure_call_endpoint, BaseResponse
 from .global_metadata import RAG_DOC_ID, RAG_DOC_PATH, RAG_KB_ID
 
-import queue
-import threading
-import time
-import requests
-import uuid
-import os
-import traceback
 
-DB_TYPES = ['mysql']
+DB_TYPES = ['mysql', 'tidb', 'sqlite']
 ENABLE_DB = os.getenv('RAG_ENABLE_DB', 'false').lower() == 'true'
 
 
