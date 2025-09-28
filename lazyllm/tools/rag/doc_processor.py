@@ -29,6 +29,7 @@ import subprocess
 
 DB_TYPES = ['mysql']
 ENABLE_DB = os.getenv('RAG_ENABLE_DB', 'false').lower() == 'true'
+USE_TRANSFORMED_FILE = os.getenv('RAG_USE_TRANSFORMED_FILE', 'false').lower() == 'true'
 
 
 class _Processor:
@@ -459,16 +460,19 @@ class DocumentProcessor(ModuleBase):
             headers = {'Accept': 'application/json'}
             empty_backoff = self._poll_interval
             while not self._stop_event.is_set() and not self._draining:
-                active = sum(1 for (fut, _) in list(self._tasks.values()) if fut and not fut.done())
-                capacity = max(0, self._max_workers - active - self._task_queue.qsize())
-
-                if capacity <= 0:
-                    time.sleep(0.2)
-                    continue
                 try:
+                    active = sum(1 for (fut, _) in list(self._tasks.values()) if fut and not fut.done())
+                    capacity = max(0, self._max_workers - active - self._task_queue.qsize())
+
+                    if capacity <= 0:
+                        LOG.warning(f'[Poller] capacity: {capacity} <= 0, sleep 0.2s')
+                        time.sleep(0.2)
+                        continue
                     params = {'worker_id': self._poller_id}
                     resp = requests.get(self._queue_get_url, headers=headers, timeout=10, params=params)
                     if resp.status_code == 204 or not resp.content:
+                        LOG.warning(f'[Poller] get empty response, resp.status_code: {resp.status_code},'
+                                    f' resp.content: {resp.content}, sleep {empty_backoff}s...')
                         time.sleep(empty_backoff)
                         empty_backoff = min(empty_backoff * 1.5, 5.0)
                         continue
@@ -480,6 +484,7 @@ class DocumentProcessor(ModuleBase):
                     worker_id = data.get('worker_id')
 
                     if not task:
+                        LOG.warning(f'[Poller] resp get empty task, sleep {empty_backoff}s...')
                         time.sleep(empty_backoff)
                         empty_backoff = min(empty_backoff * 1.5, 5.0)
                         continue
@@ -502,7 +507,8 @@ class DocumentProcessor(ModuleBase):
 
                     if self._path_prefix:
                         for file_info in file_infos:
-                            source_path = file_info.transformed_file_path if file_info.transformed_file_path \
+                            source_path = file_info.transformed_file_path if \
+                                USE_TRANSFORMED_FILE and file_info.transformed_file_path \
                                 else file_info.file_path
                             file_info.file_path = create_file_path(path=source_path, prefix=self._path_prefix)
 
