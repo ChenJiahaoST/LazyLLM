@@ -8,9 +8,7 @@ import traceback
 
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
-from sqlalchemy import create_engine, Column, JSON, String, TIMESTAMP, Table, MetaData, inspect, delete, text
-from sqlalchemy.dialects.mysql import insert as mysql_insert
-from sqlalchemy.engine import Engine
+
 from lazyllm import LOG, ModuleBase, ServerModule, UrlModule, FastapiApp as app, ThreadPoolExecutor, config
 
 from .store import LAZY_ROOT_NAME, LAZY_IMAGE_GROUP
@@ -25,7 +23,6 @@ from .global_metadata import RAG_DOC_ID, RAG_DOC_PATH, RAG_KB_ID
 
 
 DB_TYPES = ['mysql', 'tidb', 'sqlite']
-ENABLE_DB = os.getenv('RAG_ENABLE_DB', 'false').lower() == 'true'
 
 
 class _Processor:
@@ -230,9 +227,6 @@ class DocumentProcessor(ModuleBase):
                 self._update_executor = ThreadPoolExecutor(max_workers=4)
                 self._update_futures = {}
 
-                self._engines: dict[str, Engine] = {}
-                self._inspectors: dict[str, inspect] = {}
-
                 self._worker_thread = threading.Thread(target=self._worker, daemon=True)
                 self._worker_thread.start()
             self._inited = True
@@ -253,109 +247,6 @@ class DocumentProcessor(ModuleBase):
                 LOG.warning(f'Processor {name} not found!')
                 return
             self._processors.pop(name)
-
-        def _get_engine(self, url) -> Engine:
-            if url not in self._engines:
-                engine = create_engine(url, echo=False, pool_pre_ping=True)
-                self._engines[url] = engine
-                self._inspectors[url] = inspect(engine)
-            return self._engines[url]
-
-        def _get_inspector(self, url):
-            self._get_engine(url=url)
-            return self._inspectors[url]
-
-        def _get_url_from_db_info(self, db_info: DBInfo):
-            return (f'mysql+pymysql://{db_info.user}:{db_info.password}'
-                    f'@{db_info.host}:{db_info.port}/{db_info.db_name}'
-                    '?charset=utf8mb4')
-
-        def create_table(self, db_info: DBInfo):
-            if db_info.db_type == 'mysql':
-                try:
-                    url = self._get_url_from_db_info(db_info)
-                    engine = self._get_engine(url=url)
-                    inspector = self._get_inspector(url=url)
-                    tbl = db_info.table_name
-                    schema = db_info.db_name
-
-                    if not inspector.has_table(tbl, schema=schema):
-                        metadata = MetaData()
-                        table = Table(tbl, metadata, Column('document_id', String(255), primary_key=True),
-                                      Column('file_name', String(255), nullable=False),
-                                      Column('file_path', String(255), nullable=False),
-                                      Column('description', String(255), nullable=True),
-                                      Column('creater', String(255), nullable=False),
-                                      Column('dataset_id', String(255), nullable=False),
-                                      Column('tags', JSON, nullable=True),
-                                      Column('created_at', TIMESTAMP, server_default=text('CURRENT_TIMESTAMP')))
-                        metadata.create_all(engine, tables=[table])
-                        LOG.info(f'Created table `{tbl}` in `{schema}`')
-                except Exception as e:
-                    LOG.error(f'Failed to create table `{tbl}` in `{schema}`: {e}')
-                    return
-            else:
-                raise ValueError(f'Unsupported database type: {db_info.db_type}')
-
-        def operate_db(self, db_info: DBInfo, operation: str,
-                       file_infos: List[FileInfo] = None, params: Dict = None) -> None:
-            db_type = db_info.db_type
-            if db_type not in DB_TYPES:
-                raise ValueError(f'Unsupported db_type: {db_type}')
-            url = self._get_url_from_db_info(db_info)
-            engine = self._get_engine(url=url)
-            if operation == 'upsert':
-                self._upsert_records(engine, db_info, file_infos)
-            elif operation == 'delete':
-                self._delete_records(engine, db_info, params)
-            else:
-                raise ValueError(f'Unsupported operation: {operation}')
-
-        def _upsert_records(self, engine, db_info, file_infos):
-            table_name = db_info['table_name']
-            metadata = MetaData()
-            metadata.reflect(bind=engine, only=[table_name])
-            table = metadata.tables[table_name]
-            with engine.begin() as conn:
-                for file_info in file_infos:
-                    document_id = file_info.get('doc_id')
-                    file_path = file_info.get('file_path')
-                    if not document_id or not file_path:
-                        raise ValueError(f'Invalid file_info: {file_info}')
-
-                    raw_infos = {'document_id': document_id, 'file_name': os.path.basename(file_path),
-                                 'file_path': file_path, 'description': file_info['metadata'].get('description', None),
-                                 'creater': file_info['metadata'].get('creater', None),
-                                 'dataset_id': file_info['metadata'].get(RAG_KB_ID, None),
-                                 'tags': file_info['metadata'].get('tags', []) or []}
-                    infos = {}
-                    for k, v in raw_infos.items():
-                        if v is None:
-                            continue
-                        if isinstance(v, str) and not v.strip():
-                            continue
-                        if isinstance(v, (list, dict)) and not v:
-                            continue
-                        infos[k] = v
-                    if 'document_id' not in infos:
-                        infos['document_id'] = document_id
-
-                    stmt = mysql_insert(table).values(**infos)
-                    update_dict = {k: stmt.inserted[k] for k in infos if k != 'document_id'}
-                    upsert_stmt = stmt.on_duplicate_key_update(**update_dict)
-                    conn.execute(upsert_stmt)
-
-        def _delete_records(self, engine, db_info, params):
-            table_name = db_info['table_name']
-            metadata = MetaData()
-            metadata.reflect(bind=engine, only=[table_name])
-            table = metadata.tables[table_name]
-
-            with engine.begin() as conn:  # 自动提交或回滚事务
-                doc_ids = params.get('doc_ids', [])
-                for document_id in doc_ids:
-                    stmt = delete(table).where(table.c.document_id == document_id)
-                    conn.execute(stmt)
 
         @app.get('/algo/list')
         async def get_algo_list(self) -> None:
@@ -396,8 +287,6 @@ class DocumentProcessor(ModuleBase):
                     file_info.file_path = create_file_path(path=file_info.file_path, prefix=self._path_prefix)
 
             params = {'file_infos': file_infos, 'db_info': db_info, 'feedback_url': feedback_url}
-            if ENABLE_DB:
-                self.create_table(db_info=db_info)
 
             self._task_queue.put(('add', algo_id, task_id, params))
             self._pending_task_ids.add(task_id)
@@ -408,7 +297,6 @@ class DocumentProcessor(ModuleBase):
             LOG.info(f'update doc meta for {request.model_dump_json()}')
             algo_id = request.algo_id
             file_infos = request.file_infos
-            db_info = request.db_info
 
             if algo_id not in self._processors:
                 return BaseResponse(code=400, msg=f'Invalid algo_id {algo_id}')
@@ -430,9 +318,6 @@ class DocumentProcessor(ModuleBase):
                     if self._update_futures.get(doc_id) is fut:
                         del self._update_futures[doc_id]
                 new_fut.add_done_callback(_cleanup)
-                if ENABLE_DB:
-                    new_fut.add_done_callback(
-                        lambda fut, dbi=db_info, fi=file_info: self.operate_db(dbi, 'upsert', file_infos=[fi]))
 
             return BaseResponse(code=200, msg='success')
 
@@ -503,7 +388,6 @@ class DocumentProcessor(ModuleBase):
             try:
                 file_infos: List[FileInfo] = params.get('file_infos')
                 callback_path = params.get('feedback_url')
-                db_info: DBInfo = params.get('db_info')
 
                 input_files = []
                 ids = []
@@ -528,8 +412,6 @@ class DocumentProcessor(ModuleBase):
                 if input_files:
                     future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=input_files,
                                                        ids=ids, metadatas=metadatas)
-                    if ENABLE_DB:
-                        future.add_done_callback(lambda fut: self.operate_db(db_info, 'upsert', file_infos=file_infos))
                 elif reparse_group:
                     future = self._add_executor.submit(self._processors[algo_id].reparse, group_name=reparse_group,
                                                        doc_ids=reparse_doc_ids, doc_paths=reparse_files,
@@ -549,9 +431,6 @@ class DocumentProcessor(ModuleBase):
             future = self._delete_executor.submit(
                 self._processors[algo_id].delete_doc, dataset_id=dataset_id, doc_ids=doc_ids
             )
-            if ENABLE_DB and params.get('db_info') is not None:
-                db_info = params.get('db_info')
-                future.add_done_callback(lambda fut: self.operate_db(db_info, 'delete', params=params))
             self._tasks[task_id] = (future, None)
             self._pending_task_ids.remove(task_id)
 
