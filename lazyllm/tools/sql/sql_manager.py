@@ -124,7 +124,27 @@ class SqlManager(DBManager):
     @property
     def engine(self):
         if self._engine is None:
-            self._engine = sqlalchemy.create_engine(self._gen_conn_url())
+            conn_url = self._gen_conn_url()
+
+            if self._db_type == 'sqlite':
+                self._engine = sqlalchemy.create_engine(
+                    conn_url,
+                    connect_args={'check_same_thread': False, 'timeout': 30},
+                    poolclass=sqlalchemy.pool.StaticPool,
+                    echo=False
+                )
+                with self._engine.connect() as conn:
+                    conn.execute(sqlalchemy.text('PRAGMA journal_mode=WAL'))
+                    conn.execute(sqlalchemy.text('PRAGMA synchronous=NORMAL'))
+                    conn.commit()
+            else:
+                self._engine = sqlalchemy.create_engine(
+                    conn_url,
+                    pool_size=10,
+                    max_overflow=20,
+                    pool_pre_ping=True,
+                    pool_recycle=3600
+                )
         return self._engine
 
     @contextmanager
