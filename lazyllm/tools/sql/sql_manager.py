@@ -65,12 +65,15 @@ class SqlManager(DBManager):
         self._port = port
         self._db_name = db_name
         self._tables_desc_dict = {}
-        self._engine = None
         self._visible_tables = None
         self._metadata = sqlalchemy.MetaData()
         self._options_str = options_str
+        self._orm_cache = {}
         if tables_info_dict:
             self._init_tables_by_info(tables_info_dict)
+        self._engine = None
+        self._Session = None
+        self._Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     def _init_tables_by_info(self, tables_info_dict):
         try:
@@ -125,17 +128,17 @@ class SqlManager(DBManager):
     def engine(self):
         if self._engine is None:
             conn_url = self._gen_conn_url()
-
             if self._db_type == 'sqlite':
                 self._engine = sqlalchemy.create_engine(
                     conn_url,
                     connect_args={'check_same_thread': False, 'timeout': 30},
-                    poolclass=sqlalchemy.pool.StaticPool,
+                    poolclass=sqlalchemy.pool.QueuePool,
                     echo=False
                 )
                 with self._engine.connect() as conn:
                     conn.execute(sqlalchemy.text('PRAGMA journal_mode=WAL'))
                     conn.execute(sqlalchemy.text('PRAGMA synchronous=NORMAL'))
+                    conn.execute(sqlalchemy.text('PRAGMA busy_timeout=30000'))
                     conn.commit()
             else:
                 self._engine = sqlalchemy.create_engine(
@@ -147,10 +150,15 @@ class SqlManager(DBManager):
                 )
         return self._engine
 
+    @property
+    def Session(self):
+        if self._Session is None:
+            self._Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        return self._Session
+
     @contextmanager
     def get_session(self):
-        _Session = sessionmaker(bind=self.engine)
-        session = _Session()
+        session = self.Session()
         try:
             yield session
             session.commit()
@@ -216,18 +224,27 @@ class SqlManager(DBManager):
 
     def _refresh_metadata(self, only=None):
         # refresh metadata in case of deleting/creating table in other session
-        self._metadata.clear()
-        self._metadata.reflect(bind=self.engine, only=only)
+        try:
+            if only:
+                self._metadata.reflect(bind=self.engine, only=only, extend_existing=True)
+            elif not self._metadata.tables:
+                self._metadata.reflect(bind=self.engine)
+        except Exception as e:
+            raise ValueError(f'Refresh metadata failed: {e}')
 
     def get_all_tables(self) -> list:
         self._refresh_metadata()
         return list(self._metadata.tables.keys())
 
     def get_table_orm_class(self, table_name):
+        if table_name in self._orm_cache:
+            return self._orm_cache[table_name]
         self._refresh_metadata(only=[table_name])
         Base = automap_base(metadata=self._metadata)
         Base.prepare()
-        return getattr(Base.classes, table_name, None)
+        class_obj = getattr(Base.classes, table_name, None)
+        self._orm_cache[table_name] = class_obj
+        return class_obj
 
     def execute_commit(self, statement: str):
         with self.get_session() as session:
@@ -244,9 +261,9 @@ class SqlManager(DBManager):
             return f'Drop table not supported. Original statement: {statement}'
         try:
             result = []
-            _Session = sessionmaker(bind=self.engine)
+            session = self.Session()
             # Use original session without post commit
-            with _Session() as session:
+            with session as session:
                 cursor_result = session.execute(sqlalchemy.text(statement))
                 columns = list(cursor_result.keys())
                 result = [dict(zip(columns, row)) for row in cursor_result]
@@ -297,10 +314,13 @@ class SqlManager(DBManager):
         return DBResult()
 
     def insert_values(self, table_name: str, vals: List[dict]) -> DBResult:
-        # Refresh metadata in case of tables created by other api
         TableCls = self.get_table_orm_class(table_name)
         if TableCls is None:
             return DBResult(status=DBStatus.FAIL, detail=f'{table_name} not found in database')
-        with self.get_session() as session:
-            session.bulk_insert_mappings(TableCls, vals)
-        return DBResult()
+        try:
+            with self.get_session() as session:
+                objects = [TableCls(**v) for v in vals]
+                session.add_all(objects)
+            return DBResult()
+        except Exception as e:
+            return DBResult(status=DBStatus.FAIL, detail=f'Insert failed: {e}')
