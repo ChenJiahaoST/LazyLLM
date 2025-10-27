@@ -22,6 +22,11 @@ class _EmbedWrapper:
         res = self.func(*args, **kwargs)
         return self._normalize(res)
 
+    def __reduce__(self):
+        # 返回一个元组：(callable, args) 用于重建对象
+        # 这样可以避免 cloudpickle 序列化时的循环引用问题
+        return (_EmbedWrapper, (self.func,))
+
     def _normalize(self, res: Any) -> Any:
         if isinstance(res, (bytes, bytearray, memoryview)):
             res = res.decode('utf-8', 'ignore')

@@ -6,7 +6,7 @@ import tempfile
 import requests
 import unittest
 
-from lazyllm.tools.rag.doc_processor import DocumentProcessor
+from lazyllm.tools.rag.parsing_service import DocumentProcessor
 from lazyllm import Document, Retriever
 
 

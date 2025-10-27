@@ -35,8 +35,8 @@ class TablesInfo(pydantic.BaseModel):
     tables: list[TableInfo]
 
 class SqlManager(DBManager):
-    DB_TYPE_SUPPORTED = set(['postgresql', 'mysql', 'mssql', 'sqlite', 'mysql+pymysql'])
-    DB_DRIVER_MAP = {'mysql': 'pymysql'}
+    DB_TYPE_SUPPORTED = set(['postgresql', 'mysql', 'mssql', 'sqlite', 'mysql+pymysql', 'tidb'])
+    DB_DRIVER_MAP = {'mysql': 'pymysql', 'tidb': 'pymysql'}
     PYTYPE_TO_SQL_MAP = {
         'integer': sqlalchemy.Integer,
         'string': sqlalchemy.Text,
@@ -69,11 +69,11 @@ class SqlManager(DBManager):
         self._metadata = sqlalchemy.MetaData()
         self._options_str = options_str
         self._orm_cache = {}
-        if tables_info_dict:
-            self._init_tables_by_info(tables_info_dict)
         self._engine = None
         self._Session = None
         self._Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+        if tables_info_dict:
+            self._init_tables_by_info(tables_info_dict)
 
     def _init_tables_by_info(self, tables_info_dict):
         try:
@@ -85,6 +85,15 @@ class SqlManager(DBManager):
             self.set_desc(desc_dict)
         except pydantic.ValidationError as e:
             raise ValueError(f'Validate tables_info_dict failed: {str(e)}')
+
+    def _sql_type_for(self, py_type: str):
+        t = py_type.lower()
+        if self._db_type in ('mysql', 'tidb', 'mysql+pymysql'):
+            if t == 'list':
+                return sqlalchemy.JSON
+            if t == 'uuid':
+                return sqlalchemy.String(36)
+        return self.PYTYPE_TO_SQL_MAP.get(t, sqlalchemy.Text)
 
     def _create_tables_by_info(self, tables_info: TablesInfo):
         for table_info in tables_info.tables:
@@ -118,9 +127,10 @@ class SqlManager(DBManager):
         if self._db_type == 'sqlite':
             conn_url = f'sqlite:///{self._db_name}{("?" + self._options_str) if self._options_str else ""}'
         else:
-            driver = self.DB_DRIVER_MAP.get(self._db_type, '')
+            driver = self.DB_DRIVER_MAP.get(self._db_type if self._db_type != 'tidb' else 'mysql', '')
             password = quote_plus(self._password)
-            conn_url = (f'{self._db_type}{("+" + driver) if driver else ""}://{self._user}:{password}@{self._host}'
+            prefix = 'mysql' if self._db_type == 'tidb' else self._db_type
+            conn_url = (f'{prefix}{("+" + driver) if driver else ""}://{self._user}:{password}@{self._host}'
                         f':{self._port}/{self._db_name}{("?" + self._options_str) if self._options_str else ""}')
         return conn_url
 
@@ -140,6 +150,16 @@ class SqlManager(DBManager):
                     conn.execute(sqlalchemy.text('PRAGMA synchronous=NORMAL'))
                     conn.execute(sqlalchemy.text('PRAGMA busy_timeout=30000'))
                     conn.commit()
+            elif self._db_type == 'tidb':
+                self._engine = sqlalchemy.create_engine(
+                    conn_url,
+                    pool_size=10,
+                    max_overflow=20,
+                    pool_pre_ping=True,
+                    pool_recycle=300,
+                    connect_args={},
+                    echo=False,
+                )
             else:
                 self._engine = sqlalchemy.create_engine(
                     conn_url,
