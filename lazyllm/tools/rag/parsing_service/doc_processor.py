@@ -171,6 +171,7 @@ class _Processor:
                 raise Exception(f'Failed to remove nodes for docs {doc_ids} from store')
             self._check_cancel(cancel_token)
             self.add_doc(input_files=doc_paths, ids=doc_ids, metadatas=metadatas, cancel_token=cancel_token)
+            LOG.info(f'Reparse docs {doc_ids} from store done')
         else:
             self._check_cancel(cancel_token)
             p_nodes = self._store.get_nodes(group=self._node_groups[group_name]['parent'],
@@ -398,14 +399,11 @@ class DocumentProcessor(ModuleBase):
             if algo_id not in self._processors:
                 raise fastapi.HTTPException(status_code=404, detail=f'Invalid algo_id {algo_id}')
 
-            task_type = TaskType.DOC_ADD
             for file_info in file_infos:
                 if self._path_prefix:
                     file_info.file_path = create_file_path(path=file_info.file_path, prefix=self._path_prefix)
-                if not task_type == TaskType.DOC_REPARSE and file_info.reparse_group:
-                    task_type = TaskType.DOC_REPARSE
 
-            idempotency_key = self._generate_idempotency_key(algo_id, task_type.value, file_infos)
+            idempotency_key = self._generate_idempotency_key(algo_id, TaskType.DOC_ADD.value, file_infos)
             payload_json = json.dumps(payload, ensure_ascii=False)
 
             try:
@@ -436,21 +434,26 @@ class DocumentProcessor(ModuleBase):
                     else:
                         # create new task detail
                         new_task = TaskInfo(task_id=task_id, idempotency_key=idempotency_key, algo_id=algo_id,
-                                            task_type=task_type.value, task_status=TaskStatus.WAITING.value,
+                                            task_type=TaskType.DOC_ADD.value, task_status=TaskStatus.WAITING.value,
                                             payload=payload_json, retries=0, create_at=datetime.now())
                         session.add(new_task)
                         task_info = new_task
+
+                    # flush to catch potential IntegrityError before querying TaskQueue
+                    session.flush()
+
                     # add to task queue
                     queue_task = session.query(TaskQueue).filter(TaskQueue.task_id == task_id).first()
 
                     if queue_task:
                         queue_task.create_at = datetime.now()
                     else:
-                        new_queue_task = TaskQueue(task_id=task_id, task_type=task_type.value, create_at=datetime.now())
+                        new_queue_task = TaskQueue(task_id=task_id, task_type=TaskType.DOC_ADD.value,
+                                                   create_at=datetime.now())
                         session.add(new_queue_task)
 
                 LOG.info(f'[DocumentProcessor] Task {task_id} submitted to database queue successfully')
-                return BaseResponse(code=200, msg='success', data={'task_info': self._orm_to_dict(task_info)})
+                return BaseResponse(code=200, msg='success', data=self._orm_to_dict(task_info))
             except Exception as e:
                 LOG.error(f'[DocumentProcessor] Failed to submit task: {e}, {traceback.format_exc()}')
                 raise fastapi.HTTPException(status_code=500, detail=f'Failed to submit task: {str(e)}')
@@ -505,6 +508,8 @@ class DocumentProcessor(ModuleBase):
                                             payload=payload_json, retries=0, create_at=datetime.now())
                         session.add(new_task)
                         task_info = new_task
+                    # flush to catch potential IntegrityError before querying TaskQueue
+                    session.flush()
                     # add to task queue
                     queue_task = session.query(TaskQueue).filter(TaskQueue.task_id == task_id).first()
 
@@ -516,7 +521,7 @@ class DocumentProcessor(ModuleBase):
                         session.add(new_queue_task)
                 LOG.info(f'[DocumentProcessor] Delete task {task_id} submitted to database queue successfully')
                 return BaseResponse(code=200, msg='task submit successfully',
-                                    data={'task_info': self._orm_to_dict(task_info)})
+                                    data=self._orm_to_dict(task_info))
             except Exception as e:
                 LOG.error(f'[DocumentProcessor] Failed to submit delete task: {e}, {traceback.format_exc()}')
                 raise fastapi.HTTPException(status_code=500, detail=f'Failed to submit task: {str(e)}')
@@ -565,6 +570,8 @@ class DocumentProcessor(ModuleBase):
                                             create_at=datetime.now())
                         session.add(new_task)
                         task_info = new_task
+                    # flush to catch potential IntegrityError before querying TaskQueue
+                    session.flush()
                     # add to task queue
                     queue_task = session.query(TaskQueue).filter(TaskQueue.task_id == task_id).first()
 
@@ -575,7 +582,7 @@ class DocumentProcessor(ModuleBase):
                                                    create_at=datetime.now())
                         session.add(new_queue_task)
                 LOG.info(f'[DocumentProcessor] Update meta task {task_id} submitted to database queue successfully')
-                return BaseResponse(code=200, msg='success', data={'task_info': self._orm_to_dict(task_info)})
+                return BaseResponse(code=200, msg='success', data=self._orm_to_dict(task_info))
             except Exception as e:
                 LOG.error(f'[DocumentProcessor] Failed to submit update meta task: {e}, {traceback.format_exc()}')
                 raise fastapi.HTTPException(status_code=500, detail=f'Failed to submit task: {str(e)}')
@@ -685,7 +692,7 @@ class DocumentProcessor(ModuleBase):
                     err_code = type(e).__name__
                 try:
                     if ok:
-                        self._update_task_status(task_id, task_status)
+                        self._update_task_status(task_id, task_status, '200', 'success')
                         LOG.info(f"[Worker] Task {task_id} finished successfully, status: {task_status}")
                     else:
                         self._update_task_status(task_id, task_status, err_code, err)
@@ -835,10 +842,10 @@ class DocumentProcessor(ModuleBase):
                         task.task_status = status.value
                         if status in (TaskStatus.FINISHED, TaskStatus.FAILED, TaskStatus.CANCELED):
                             task.finished_at = datetime.now()
-                            if error_code:
+                            if error_code is not None:
                                 task.error_code = error_code
                                 record.reason += f'error_code: {error_code}\n'
-                            if error_msg:
+                            if error_msg is not None:
                                 task.error_msg = error_msg[:512]  # limit length
                                 record.reason += f'error_msg: {error_msg[:512]}'
                         LOG.info(f'[DocumentProcessor] Task {task_id} status updated to {status}')

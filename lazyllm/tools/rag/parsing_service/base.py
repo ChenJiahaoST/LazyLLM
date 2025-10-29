@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 from enum import Enum
 from uuid import uuid4
@@ -23,7 +23,7 @@ class DBInfo(BaseModel):
 
 
 class AddDocRequest(BaseModel):
-    task_id: Optional[str] = str(uuid4())
+    task_id: str = Field(default_factory=lambda: str(uuid4()))
     algo_id: Optional[str] = '__default__'
     file_infos: List[FileInfo]
     db_info: Optional[DBInfo] = None
@@ -31,14 +31,14 @@ class AddDocRequest(BaseModel):
 
 
 class UpdateMetaRequest(BaseModel):
-    task_id: Optional[str] = str(uuid4())
+    task_id: str = Field(default_factory=lambda: str(uuid4()))
     algo_id: Optional[str] = '__default__'
     file_infos: List[FileInfo]
     db_info: Optional[DBInfo] = None
 
 
 class DeleteDocRequest(BaseModel):
-    task_id: Optional[str] = str(uuid4())
+    task_id: str = Field(default_factory=lambda: str(uuid4()))
     algo_id: Optional[str] = '__default__'
     kb_id: str
     doc_ids: List[str]
