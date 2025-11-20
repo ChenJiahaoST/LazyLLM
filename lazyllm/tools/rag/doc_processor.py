@@ -128,6 +128,28 @@ class _Processor:
             nodes = self._create_nodes_impl(p_nodes, group_name)
         return nodes
 
+    def transfer_doc(self, doc_ids: List[str], metadatas: List[Dict], source_kb_id: str, source_doc_ids: List[str],
+                     mode: str = 'cp', **kwargs):
+        cancel_event = kwargs.get('cancel_event', None)
+        if cancel_event and cancel_event.is_set():
+            LOG.info(f'[_Processor - transfer_doc] Task canceled! doc_ids:{doc_ids}')
+            raise RuntimeError('Task canceled!')
+        if mode not in ['cp', 'mv']:
+            raise ValueError(f'Invalid mode: {mode}')
+        # copy process
+
+        # move process
+        if mode == 'mv':
+            self._store.remove_nodes(doc_ids=source_doc_ids, kb_id=source_kb_id)
+        return
+        for doc_id, metadata in zip(doc_ids, metadatas):
+            self._store.update_doc_meta(doc_id=doc_id, metadata=metadata)
+        for source_doc_id, source_doc_id in zip(source_doc_ids, doc_ids):
+            self._store.update_doc_meta(doc_id=source_doc_id, metadata=metadata)
+        for source_doc_id in source_doc_ids:
+            self._store.remove_nodes(doc_ids=[source_doc_id], kb_id=source_kb_id)
+        self.add_doc(input_files=doc_ids, metadatas=metadatas, cancel_event=cancel_event)
+
     def reparse(self, group_name: str, uids: Optional[List[str]] = None, doc_ids: Optional[List[str]] = None, **kwargs):
         cancel_event = kwargs.get('cancel_event', None)
         if cancel_event and cancel_event.is_set():
@@ -213,12 +235,20 @@ class _Processor:
         self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
 
 
+class TransferParams(BaseModel):
+    mode: Optional[str] = 'cp'  # cp or mv
+    source_algo_id: str
+    source_doc_id: str
+    source_kb_id: str
+
+
 class FileInfo(BaseModel):
     file_path: Optional[str] = None
     transformed_file_path: Optional[str] = None
     doc_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
     reparse_group: Optional[str] = None
+    transfer_params: Optional[TransferParams] = None
 
 
 class DBInfo(BaseModel):
@@ -778,20 +808,27 @@ class DocumentProcessor(ModuleBase):
             else:
                 LOG.error('process_feedback_service is not set')
 
-        def _exec_add_task(self, algo_id, task_id, params):
+        def _exec_add_task(self, algo_id, task_id, params):  # noqa: C901
             try:
                 file_infos: List[FileInfo] = params.get('file_infos')
                 callback_path = params.get('feedback_url')
                 db_info: DBInfo = params.get('db_info')
-
-                input_files = []
-                ids = []
-                metadatas = []
-
+                # new parsing
+                new_input_files = []
+                new_ids = []
+                new_metadatas = []
+                # need reparsing
                 reparse_group = None
                 reparse_doc_ids = []
                 reparse_files = []
                 reparse_metadatas = []
+                # need transfer
+                transfer_doc_ids = []
+                transfer_metadatas = []
+                mode = None
+                source_algo_id = None
+                source_kb_id = None
+                source_doc_ids = []
 
                 for file_info in file_infos:
                     if file_info.reparse_group:
@@ -799,25 +836,44 @@ class DocumentProcessor(ModuleBase):
                         reparse_doc_ids.append(file_info.doc_id)
                         reparse_files.append(file_info.file_path)
                         reparse_metadatas.append(file_info.metadata)
+                    elif file_info.transfer_params:
+                        if source_algo_id is not None and source_algo_id != file_info.transfer_params.source_algo_id:
+                            raise ValueError('Source algo_id must be the same')
+                        if source_kb_id is not None and source_kb_id != file_info.transfer_params.source_kb_id:
+                            raise ValueError('Source kb_id must be the same')
+                        if mode is not None and mode != file_info.transfer_params.mode:
+                            raise ValueError('Mode must be the same')
+                        mode = file_info.transfer_params.mode
+                        source_algo_id = file_info.transfer_params.source_algo_id
+                        source_kb_id = file_info.transfer_params.source_kb_id
+                        source_doc_ids.append(file_info.transfer_params.source_doc_id)
+                        transfer_doc_ids.append(file_info.doc_id)
+                        transfer_metadatas.append(file_info.metadata)
                     else:
-                        input_files.append(file_info.file_path)
-                        ids.append(file_info.doc_id)
-                        metadatas.append(file_info.metadata)
+                        new_input_files.append(file_info.file_path)
+                        new_ids.append(file_info.doc_id)
+                        new_metadatas.append(file_info.metadata)
 
                 token = threading.Event()
                 with self._lock:
                     self._cancel_tokens[task_id] = token
-                if input_files:
-                    future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=input_files,
-                                                       ids=ids, metadatas=metadatas, cancel_event=token)
+                if new_input_files:
+                    future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=new_input_files,
+                                                       ids=new_ids, metadatas=new_metadatas, cancel_event=token)
                 elif reparse_group:
                     future = self._add_executor.submit(self._processors[algo_id].reparse, group_name=reparse_group,
                                                        doc_ids=reparse_doc_ids, doc_paths=reparse_files,
                                                        metadatas=reparse_metadatas, cancel_event=token)
+
+                elif transfer_doc_ids:
+                    # NOTE: currently only support transfer to the same algo_id
+                    if source_algo_id not in self._processors or algo_id != source_algo_id:
+                        raise ValueError('Source algo_id must be the same')
+                    future = self._add_executor.submit(self._processors[algo_id].transfer_doc, doc_ids=transfer_doc_ids,
+                                                       metadatas=transfer_metadatas, source_kb_id=source_kb_id,
+                                                       source_doc_ids=source_doc_ids, mode=mode, cancel_event=token)
                 else:
-                    LOG.error(
-                        f'Task-{task_id}: add task error, no input files {input_files} or reparse group {reparse_group}'
-                    )
+                    raise ValueError('No valid input files, reparse group, or transfer doc ids')
                 with self._lock:
                     self._tasks[task_id] = (future, callback_path)
                     self._pending_task_ids.remove(task_id)
@@ -825,6 +881,7 @@ class DocumentProcessor(ModuleBase):
                                   db_info=db_info, file_infos=file_infos)
             except Exception as e:
                 LOG.error(f'Task-{task_id}: add task error {e}')
+                raise e
 
         def _exec_delete_task(self, algo_id, task_id, params):
             dataset_id = params.get('dataset_id')
