@@ -110,7 +110,7 @@ class MapStore(LazyLLMStoreBase):
         return
 
     @override
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         try:
             if self._sqlite_first:
                 self._save_to_uri(collection_name, data)

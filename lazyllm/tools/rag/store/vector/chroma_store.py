@@ -100,7 +100,7 @@ class ChromadbStore(LazyLLMStoreBase):
             LOG.success(f"Initialzed chromadb in host: {self._host}, port: {self._port}")
 
     @override
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         try:
             # NOTE chromadb only support single embedding for each collection
             if not data: return

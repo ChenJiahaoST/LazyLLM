@@ -84,7 +84,7 @@ class OpenSearchStore(LazyLLMStoreBase):
                 raise e
 
     @override
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         if not data: return
         try:
             self._ensure_index(collection_name)

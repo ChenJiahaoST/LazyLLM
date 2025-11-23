@@ -15,7 +15,7 @@ from ..utils import upload_data_to_s3, download_data_from_s3, fibonacci_backoff,
 from ...data_type import DataType
 from ...global_metadata import GlobalMetadataDesc, RAG_DOC_ID, RAG_KB_ID
 
-from lazyllm import warp, pipeline, LOG, config
+from lazyllm import warp, pipeline, LOG, config, package
 from lazyllm.common import override
 from lazyllm.thirdparty import boto3
 
@@ -36,6 +36,7 @@ class Segment(BaseModel):
     answer: Optional[str] = ''
     image_keys: Optional[List[str]] = Field(default_factory=list)
     number: Optional[int] = 0
+    copy_source: Optional[Dict[str, str]] = Field(default_factory=dict)
 
 
 class SenseCoreStore(LazyLLMStoreBase):
@@ -111,6 +112,12 @@ class SenseCoreStore(LazyLLMStoreBase):
                           parent=data.get('parent', ''),
                           global_meta=json.dumps(data.get('global_meta', {}), ensure_ascii=False),
                           answer=data.get('answer', ''), number=data.get('number', 0))
+        if len(data.get('copy_source', {})):
+            segment.copy_source = {
+                'dataset_id': data.get('copy_source', {}).get(RAG_KB_ID, ''),
+                'document_id': data.get('copy_source', {}).get('doc_id', ''),
+                'segment_id': data.get('copy_source', {}).get('uid', '')
+            }
         # image extract
         if isinstance(segment.content, str):
             target = segment.content
@@ -218,7 +225,7 @@ class SenseCoreStore(LazyLLMStoreBase):
             return ret_str[:-5]  # truncate the last ' and '
         return ret_str
 
-    def _upload_data_and_insert(self, data: List[dict]) -> str:
+    def _upload_data_and_insert(self, data: List[dict], job_type: str = 'insert') -> str:
         try:
             job_id = str(uuid.uuid4())
             groups = set()
@@ -242,7 +249,8 @@ class SenseCoreStore(LazyLLMStoreBase):
             url = urljoin(self._uri, 'v1/writerSegmentJob:submit')
             params = {'writer_segment_job_id': job_id}
             headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
-            payload = {'dataset_id': dataset_id or self._kb_id, 'file_key': obj_key, 'groups': groups}
+            payload = {'dataset_id': dataset_id or self._kb_id, 'file_key': obj_key,
+                       'groups': groups, 'job_type': job_type}
 
             response = requests.post(url, params=params, headers=headers, json=payload)
             response.raise_for_status()
@@ -279,16 +287,19 @@ class SenseCoreStore(LazyLLMStoreBase):
         return collection_name.split('_')[-1] if "lazyllm_root" not in collection_name else "lazyllm_root"
 
     @override
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         if not data: return True
         try:
             upsert_start_time = time.time()
+            job_type = kwargs.get('type', 'insert')
             with pipeline() as insert_ppl:
                 insert_ppl.get_ids = warp(self._upload_data_and_insert).aslist
                 insert_ppl.check_status = warp(self._check_insert_job_status)
 
-            batched_data = [data[i:i + INSERT_BATCH_SIZE] for i in range(0, len(data), INSERT_BATCH_SIZE)]
-            insert_ppl(batched_data)
+            batched_data = [
+                package(data[i:i + INSERT_BATCH_SIZE], job_type) for i in range(0, len(data), INSERT_BATCH_SIZE)
+            ]
+            insert_ppl(data=batched_data, job_type=kwargs.get('type', 'insert'))
             upsert_end_time = time.time()
             LOG.info(f"[SenseCore Store - upsert] Upsert done! collection_name:{collection_name}, "
                      f"Time:{upsert_end_time - upsert_start_time}s")
@@ -340,7 +351,7 @@ class SenseCoreStore(LazyLLMStoreBase):
             if uids:
                 payload['segment_ids'] = uids
             else:
-                payload["page_size"] = 100
+                payload["page_size"] = 1000
             segments = []
             while True:
                 response = requests.post(url, headers=headers, json=payload)

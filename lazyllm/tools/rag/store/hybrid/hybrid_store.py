@@ -24,10 +24,10 @@ class HybridStore(LazyLLMStoreBase):
         self.vector_store.connect(*args, **kwargs)
 
     @override
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         segments = [{k: v for k, v in segment.items() if k != 'embedding'} for segment in data]
-        return self.segment_store.upsert(collection_name=collection_name, data=segments) and \
-            self.vector_store.upsert(collection_name=collection_name, data=data)
+        return self.segment_store.upsert(collection_name=collection_name, data=segments, **kwargs) and \
+            self.vector_store.upsert(collection_name=collection_name, data=data, **kwargs)
 
     @override
     def delete(self, collection_name: str, criteria: Optional[dict] = None, **kwargs) -> bool:

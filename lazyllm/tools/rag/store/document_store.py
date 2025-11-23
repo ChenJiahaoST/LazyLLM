@@ -1,6 +1,8 @@
 import os
+import uuid
 import lazyllm
 import traceback
+import copy
 
 from collections import defaultdict
 from typing import Optional, List, Union, Set, Dict, Callable, Any, Tuple
@@ -171,16 +173,8 @@ class _DocumentStore(object):
                             f' but store {self.impl} does not support embedding')
             if self.impl.need_embedding:
                 parallel_do_embedding(self._embed, [], nodes, self._group_embed_keys)
-            group_segments = defaultdict(list)
-            for node in nodes:
-                group_segments[node._group].append(self._serialize_node(node))
-            # upsert batch segments
-            for group, segments in group_segments.items():
-                if not self.is_group_active(group):
-                    LOG.warning(f'[_DocumentStore - {self._algo_name}] Group {group} is not active, skip')
-                    continue
-                for i in range(0, len(segments), INSERT_BATCH_SIZE):
-                    self.impl.upsert(self._gen_collection_name(group), segments[i:i + INSERT_BATCH_SIZE])
+            segments = [self._serialize_node(node) for node in nodes]
+            self.update_segments(segments)
             # update indices
             for index in self._indices.values():
                 index.update(nodes)
@@ -260,6 +254,38 @@ class _DocumentStore(object):
         except Exception as e:
             LOG.error(f'[_DocumentStore - {self._algo_name}] Failed to get segments: {e}')
             raise
+
+    def copy_segments(self, uids: Optional[List[str]] = None, doc_ids: Optional[Set] = None,
+                      group: Optional[str] = None, kb_id: Optional[str] = None, **kwargs) -> List[dict]:
+        source_segs = self.get_segments(uids, doc_ids, group, kb_id, **kwargs)
+        new_segs = [self._copy_segment(seg) for seg in source_segs]
+        return new_segs
+
+    def _copy_segment(self, segment: dict) -> dict:
+        new_seg = copy.deepcopy(segment)
+        new_seg['uid'] = str(uuid.uuid4())
+        new_seg['copy_source'] = {
+            RAG_KB_ID: segment[RAG_KB_ID],
+            'doc_id': segment['doc_id'],
+            'uid': segment['uid'],
+        }
+        return new_seg
+
+    def update_segments(self, segments: List[dict], **kwargs) -> None:
+        try:
+            group_segments = defaultdict(list)
+            for seg in segments:
+                group_segments[seg['group']].append(seg)
+            # upsert batch segments
+            for group, segments in group_segments.items():
+                if not self.is_group_active(group):
+                    LOG.warning(f'[_DocumentStore - {self._algo_name}] Group {group} is not active, skip')
+                    continue
+                for i in range(0, len(segments), INSERT_BATCH_SIZE):
+                    self.impl.upsert(self._gen_collection_name(group), segments[i:i + INSERT_BATCH_SIZE], **kwargs)
+        except Exception as e:
+            LOG.error(f'[_DocumentStore - {self._algo_name}] Failed to update segments: {e}')
+            raise e
 
     def update_doc_meta(self, doc_id: str, metadata: dict) -> None:
         kb_id = metadata.get(RAG_KB_ID, None)

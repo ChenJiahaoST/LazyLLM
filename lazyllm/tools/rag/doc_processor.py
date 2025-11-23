@@ -42,8 +42,9 @@ class _Processor:
         self._display_name = display_name
         self._description = description
 
-    def add_doc(self, input_files: List[str], ids: Optional[List[str]] = None,
-                metadatas: Optional[List[Dict[str, Any]]] = None, **kwargs):
+    def add_doc(self, input_files: List[str], ids: Optional[List[str]] = None,  # noqa C901
+                metadatas: Optional[List[Dict[str, Any]]] = None, transfer_params: dict = None,
+                **kwargs):
         try:
             cancel_event = kwargs.get('cancel_event', None)
             if cancel_event and cancel_event.is_set():
@@ -59,16 +60,22 @@ class _Processor:
                 metadata.setdefault(RAG_DOC_PATH, path)
                 metadata.setdefault(RAG_KB_ID, DEFAULT_KB_ID)
             parse_start_time = time.time()
-            root_nodes, image_nodes = self._reader.load_data(input_files, metadatas, split_image_nodes=True)
-            parse_end_time = time.time()
-            if cancel_event and cancel_event.is_set():
-                LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}')
-                raise RuntimeError('Task canceled!')
-            self._store.update_nodes(self._set_nodes_number(root_nodes))
-            self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME, cancel_event=cancel_event)
-            if image_nodes:
-                self._store.update_nodes(self._set_nodes_number(image_nodes))
-                self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP, cancel_event=cancel_event)
+            if transfer_params is not None:
+                # skip reader, get nodes from the store
+                parse_end_time = time.time()
+                self._transfer_impl(doc_ids=ids, metadatas=metadatas, **transfer_params, cancel_event=cancel_event)
+                pass
+            else:
+                root_nodes, image_nodes = self._reader.load_data(input_files, metadatas, split_image_nodes=True)
+                parse_end_time = time.time()
+                if cancel_event and cancel_event.is_set():
+                    LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}')
+                    raise RuntimeError('Task canceled!')
+                self._store.update_nodes(self._set_nodes_number(root_nodes))
+                self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME, cancel_event=cancel_event)
+                if image_nodes:
+                    self._store.update_nodes(self._set_nodes_number(image_nodes))
+                    self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP, cancel_event=cancel_event)
             add_end_time = time.time()
             LOG.info(f'[_Processor - add_doc] Add documents done! files:{input_files}, '
                      f'Total Time:{add_end_time - add_start_time}s, '
@@ -128,27 +135,77 @@ class _Processor:
             nodes = self._create_nodes_impl(p_nodes, group_name)
         return nodes
 
-    def transfer_doc(self, doc_ids: List[str], metadatas: List[Dict], source_kb_id: str, source_doc_ids: List[str],
-                     mode: str = 'cp', **kwargs):
-        cancel_event = kwargs.get('cancel_event', None)
-        if cancel_event and cancel_event.is_set():
-            LOG.info(f'[_Processor - transfer_doc] Task canceled! doc_ids:{doc_ids}')
-            raise RuntimeError('Task canceled!')
-        if mode not in ['cp', 'mv']:
-            raise ValueError(f'Invalid mode: {mode}')
-        # copy process
+    def _transfer_impl(self, doc_ids: List[str], metadatas: List[Dict], source_kb_id: str,  # noqa C901
+                       source_doc_ids: List[str], mode: str = 'cp', **kwargs):
+        try:
+            cancel_event = kwargs.get('cancel_event', None)
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - transfer_doc] Task canceled! doc_ids:{doc_ids}')
+                raise RuntimeError('Task canceled!')
+            if mode not in ['cp', 'mv']:
+                raise ValueError(f'Invalid mode: {mode}')
+            # copy process(from root group to group leaf)
+            if len(doc_ids) != len(source_doc_ids):
+                raise ValueError(f'The length of doc_ids and source_doc_ids must be the same. '
+                                 f'doc_ids:{doc_ids}, source_doc_ids:{source_doc_ids}')
+            kb_id = metadatas[0].get(RAG_KB_ID)
+            doc_id_map = {}
+            doc_id_meta_map = {}
+            for i, source_doc_id in enumerate(source_doc_ids):
+                doc_id_map[source_doc_id] = doc_ids[i]
+                doc_id_meta_map[source_doc_id] = metadatas[i]
+            # root
+            root_segs = self._store.copy_segments(doc_ids=source_doc_ids, group=LAZY_ROOT_NAME, kb_id=source_kb_id)
+            root_uid_map = {}
+            for seg in root_segs:
+                root_uid_map[seg['copy_source']['uid']] = seg['uid']
+                seg['doc_id'] = doc_id_map[seg['copy_source']['doc_id']]
+                seg[RAG_KB_ID] = kb_id
+                seg['global_meta'].update(doc_id_meta_map[seg['copy_source']['doc_id']])
+            self._store.update_segments(root_segs, type='copy')
 
-        # move process
-        if mode == 'mv':
-            self._store.remove_nodes(doc_ids=source_doc_ids, kb_id=source_kb_id)
-        return
-        for doc_id, metadata in zip(doc_ids, metadatas):
-            self._store.update_doc_meta(doc_id=doc_id, metadata=metadata)
-        for source_doc_id, source_doc_id in zip(source_doc_ids, doc_ids):
-            self._store.update_doc_meta(doc_id=source_doc_id, metadata=metadata)
-        for source_doc_id in source_doc_ids:
-            self._store.remove_nodes(doc_ids=[source_doc_id], kb_id=source_kb_id)
-        self.add_doc(input_files=doc_ids, metadatas=metadatas, cancel_event=cancel_event)
+            def _copy_segments_recursive(p_uid_map: dict, p_name: str, **kwargs):
+                cancel_event = kwargs.get('cancel_event', None)
+                for group_name in self._store.activated_groups():
+                    group = self._node_groups.get(group_name)
+                    if group is None:
+                        raise ValueError(f'Node group {group_name} does not exist. Please check the group name '
+                                         'or add a new one through `create_node_group`.')
+                    if cancel_event and cancel_event.is_set():
+                        LOG.info(f'[_Processor - _create_nodes_recursive] Task canceled! group_name:{group_name}')
+                        raise RuntimeError('Task canceled!')
+                    if group['parent'] == p_name:
+                        segs = self._store.copy_segments(doc_ids=source_doc_ids, group=group_name,
+                                                         kb_id=source_kb_id)
+                        uid_map = {}
+                        for seg in segs:
+                            uid_map[seg['copy_source']['uid']] = seg['uid']
+                            seg['doc_id'] = doc_id_map[seg['copy_source']['doc_id']]
+                            seg[RAG_KB_ID] = kb_id
+                            seg['global_meta'].update(doc_id_meta_map[seg['copy_source']['doc_id']])
+                            seg['parent'] = p_uid_map.get(seg['parent'], None) if seg['parent'] else None
+                        self._store.update_segments(segs, type='copy')
+                        if segs: _copy_segments_recursive(uid_map, group_name, cancel_event=cancel_event)
+            # leaf
+            _copy_segments_recursive(p_uid_map=root_uid_map, p_name=LAZY_ROOT_NAME, cancel_event=cancel_event)
+            if cancel_event and cancel_event.is_set():
+                LOG.info(f'[_Processor - transfer_doc] Task canceled! doc_ids:{doc_ids}')
+                raise RuntimeError('Task canceled!')
+            # move process
+            if mode == 'mv':
+                self._store.remove_nodes(doc_ids=source_doc_ids, kb_id=source_kb_id)
+            return
+        except RuntimeError as e:
+            if 'Task canceled!' in str(e):
+                LOG.info(f'[_Processor - transfer_doc] Task canceled! doc_ids:{doc_ids}')
+                kb_id = metadatas[0].get(RAG_KB_ID, DEFAULT_KB_ID)
+                self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
+            else:
+                LOG.error(f'Transfer documents failed: {e}, {traceback.format_exc()}')
+            raise e
+        except Exception as e:
+            LOG.error(f'Transfer documents failed: {e}, {traceback.format_exc()}')
+            raise e
 
     def reparse(self, group_name: str, uids: Optional[List[str]] = None, doc_ids: Optional[List[str]] = None, **kwargs):
         cancel_event = kwargs.get('cancel_event', None)
@@ -823,9 +880,7 @@ class DocumentProcessor(ModuleBase):
                 reparse_files = []
                 reparse_metadatas = []
                 # need transfer
-                transfer_doc_ids = []
-                transfer_metadatas = []
-                mode = None
+                transfer_mode = None
                 source_algo_id = None
                 source_kb_id = None
                 source_doc_ids = []
@@ -836,28 +891,38 @@ class DocumentProcessor(ModuleBase):
                         reparse_doc_ids.append(file_info.doc_id)
                         reparse_files.append(file_info.file_path)
                         reparse_metadatas.append(file_info.metadata)
-                    elif file_info.transfer_params:
-                        if source_algo_id is not None and source_algo_id != file_info.transfer_params.source_algo_id:
-                            raise ValueError('Source algo_id must be the same')
-                        if source_kb_id is not None and source_kb_id != file_info.transfer_params.source_kb_id:
-                            raise ValueError('Source kb_id must be the same')
-                        if mode is not None and mode != file_info.transfer_params.mode:
-                            raise ValueError('Mode must be the same')
-                        mode = file_info.transfer_params.mode
-                        source_algo_id = file_info.transfer_params.source_algo_id
-                        source_kb_id = file_info.transfer_params.source_kb_id
-                        source_doc_ids.append(file_info.transfer_params.source_doc_id)
-                        transfer_doc_ids.append(file_info.doc_id)
-                        transfer_metadatas.append(file_info.metadata)
                     else:
                         new_input_files.append(file_info.file_path)
                         new_ids.append(file_info.doc_id)
                         new_metadatas.append(file_info.metadata)
+                        if file_info.transfer_params:
+                            if source_algo_id is not None and \
+                                    source_algo_id != file_info.transfer_params.source_algo_id:
+                                raise ValueError('Source algo_id must be the same')
+                            if source_kb_id is not None and \
+                                    source_kb_id != file_info.transfer_params.source_kb_id:
+                                raise ValueError('Source kb_id must be the same')
+                            if transfer_mode is not None and \
+                                    transfer_mode != file_info.transfer_params.mode:
+                                raise ValueError('Mode must be the same')
+                            transfer_mode = file_info.transfer_params.mode
+                            source_algo_id = file_info.transfer_params.source_algo_id
+                            source_kb_id = file_info.transfer_params.source_kb_id
+                            source_doc_ids.append(file_info.transfer_params.source_doc_id)
 
                 token = threading.Event()
                 with self._lock:
                     self._cancel_tokens[task_id] = token
-                if new_input_files:
+                if transfer_mode:
+                    # NOTE: currently only support transfer to the same algo_id
+                    if source_algo_id not in self._processors or algo_id != source_algo_id:
+                        raise ValueError('Source algo_id must be the same')
+                    transfer_params = {'mode': transfer_mode, 'source_kb_id': source_kb_id,
+                                       'source_doc_ids': source_doc_ids}
+                    future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=new_input_files,
+                                                       ids=new_ids, metadatas=new_metadatas,
+                                                       transfer_params=transfer_params, cancel_event=token)
+                elif new_input_files:
                     future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=new_input_files,
                                                        ids=new_ids, metadatas=new_metadatas, cancel_event=token)
                 elif reparse_group:
@@ -865,13 +930,6 @@ class DocumentProcessor(ModuleBase):
                                                        doc_ids=reparse_doc_ids, doc_paths=reparse_files,
                                                        metadatas=reparse_metadatas, cancel_event=token)
 
-                elif transfer_doc_ids:
-                    # NOTE: currently only support transfer to the same algo_id
-                    if source_algo_id not in self._processors or algo_id != source_algo_id:
-                        raise ValueError('Source algo_id must be the same')
-                    future = self._add_executor.submit(self._processors[algo_id].transfer_doc, doc_ids=transfer_doc_ids,
-                                                       metadatas=transfer_metadatas, source_kb_id=source_kb_id,
-                                                       source_doc_ids=source_doc_ids, mode=mode, cancel_event=token)
                 else:
                     raise ValueError('No valid input files, reparse group, or transfer doc ids')
                 with self._lock:

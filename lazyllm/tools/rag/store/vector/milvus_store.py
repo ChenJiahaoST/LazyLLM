@@ -126,7 +126,7 @@ class MilvusStore(LazyLLMStoreBase):
             self._client_pool.release(c)
 
     @override
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         try:
             if not data: return True
             data_embeddings = data[0].get('embedding', {})

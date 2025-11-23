@@ -60,6 +60,7 @@ class Segment(BaseModel):
     parent: Optional[str] = None    # uid of parent node
     answer: Optional[str] = ''
     image_keys: Optional[List[str]] = Field(default_factory=list)
+    copy_source: Optional[Dict[str, str]] = None
 
 
 class StoreCapability(IntFlag):
@@ -82,7 +83,7 @@ class LazyLLMStoreBase(ABC, metaclass=LazyLLMRegisterMetaABCClass):
         raise NotImplementedError
 
     @abstractmethod
-    def upsert(self, collection_name: str, data: List[dict]) -> bool:
+    def upsert(self, collection_name: str, data: List[dict], **kwargs) -> bool:
         raise NotImplementedError
 
     @abstractmethod
