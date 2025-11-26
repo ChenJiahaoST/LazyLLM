@@ -135,8 +135,8 @@ class _Processor:
             nodes = self._create_nodes_impl(p_nodes, group_name)
         return nodes
 
-    def _transfer_impl(self, doc_ids: List[str], metadatas: List[Dict], source_kb_id: str,  # noqa C901
-                       source_doc_ids: List[str], mode: str = 'cp', **kwargs):
+    def _transfer_impl(self, doc_ids: List[str], metadatas: List[Dict], target_kb_id: str,  # noqa C901
+                       target_doc_ids: List[str], mode: str = 'cp', **kwargs):
         try:
             cancel_event = kwargs.get('cancel_event', None)
             if cancel_event and cancel_event.is_set():
@@ -145,22 +145,34 @@ class _Processor:
             if mode not in ['cp', 'mv']:
                 raise ValueError(f'Invalid mode: {mode}')
             # copy process(from root group to group leaf)
-            if len(doc_ids) != len(source_doc_ids):
-                raise ValueError(f'The length of doc_ids and source_doc_ids must be the same. '
-                                 f'doc_ids:{doc_ids}, source_doc_ids:{source_doc_ids}')
+            if len(doc_ids) != len(target_doc_ids):
+                raise ValueError(f'The length of doc_ids and target_doc_ids must be the same. '
+                                 f'doc_ids:{doc_ids}, target_doc_ids:{target_doc_ids}')
+            # origin kb id
             kb_id = metadatas[0].get(RAG_KB_ID)
             doc_id_map = {}
+            for i, target_doc_id in enumerate(target_doc_ids):
+                # origin doc id --> new doc id
+                doc_id_map[doc_ids[i]] = target_doc_id
+
             doc_id_meta_map = {}
-            for i, source_doc_id in enumerate(source_doc_ids):
-                doc_id_map[source_doc_id] = doc_ids[i]
-                doc_id_meta_map[source_doc_id] = metadatas[i]
+            for i, meta in enumerate(metadatas):
+                new_meta = {}
+                for k, v in meta.items():
+                    if k == RAG_DOC_ID:
+                        new_meta[RAG_DOC_ID] = doc_id_map[v]
+                    elif k == RAG_KB_ID:
+                        new_meta[RAG_KB_ID] = target_kb_id
+                    else:
+                        new_meta[k] = v
+                doc_id_meta_map[doc_ids[i]] = new_meta
             # root
-            root_segs = self._store.copy_segments(doc_ids=source_doc_ids, group=LAZY_ROOT_NAME, kb_id=source_kb_id)
+            root_segs = self._store.copy_segments(doc_ids=doc_ids, group=LAZY_ROOT_NAME, kb_id=kb_id)
             root_uid_map = {}
             for seg in root_segs:
                 root_uid_map[seg['copy_source']['uid']] = seg['uid']
                 seg['doc_id'] = doc_id_map[seg['copy_source']['doc_id']]
-                seg[RAG_KB_ID] = kb_id
+                seg[RAG_KB_ID] = target_kb_id
                 seg['global_meta'].update(doc_id_meta_map[seg['copy_source']['doc_id']])
             self._store.update_segments(root_segs, type='copy')
 
@@ -175,13 +187,13 @@ class _Processor:
                         LOG.info(f'[_Processor - _create_nodes_recursive] Task canceled! group_name:{group_name}')
                         raise RuntimeError('Task canceled!')
                     if group['parent'] == p_name:
-                        segs = self._store.copy_segments(doc_ids=source_doc_ids, group=group_name,
-                                                         kb_id=source_kb_id)
+                        segs = self._store.copy_segments(doc_ids=doc_ids, group=group_name,
+                                                         kb_id=kb_id)
                         uid_map = {}
                         for seg in segs:
                             uid_map[seg['copy_source']['uid']] = seg['uid']
                             seg['doc_id'] = doc_id_map[seg['copy_source']['doc_id']]
-                            seg[RAG_KB_ID] = kb_id
+                            seg[RAG_KB_ID] = target_kb_id
                             seg['global_meta'].update(doc_id_meta_map[seg['copy_source']['doc_id']])
                             seg['parent'] = p_uid_map.get(seg['parent'], None) if seg['parent'] else None
                         self._store.update_segments(segs, type='copy')
@@ -193,13 +205,12 @@ class _Processor:
                 raise RuntimeError('Task canceled!')
             # move process
             if mode == 'mv':
-                self._store.remove_nodes(doc_ids=source_doc_ids, kb_id=source_kb_id)
+                self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
             return
         except RuntimeError as e:
             if 'Task canceled!' in str(e):
-                LOG.info(f'[_Processor - transfer_doc] Task canceled! doc_ids:{doc_ids}')
-                kb_id = metadatas[0].get(RAG_KB_ID, DEFAULT_KB_ID)
-                self._store.remove_nodes(doc_ids=doc_ids, kb_id=kb_id)
+                LOG.info(f'[_Processor - transfer_doc] Task canceled! target doc_ids:{target_doc_ids}')
+                self._store.remove_nodes(doc_ids=target_doc_ids, kb_id=target_kb_id)
             else:
                 LOG.error(f'Transfer documents failed: {e}, {traceback.format_exc()}')
             raise e
@@ -294,9 +305,9 @@ class _Processor:
 
 class TransferParams(BaseModel):
     mode: Optional[str] = 'cp'  # cp or mv
-    source_algo_id: str
-    source_doc_id: str
-    source_kb_id: str
+    target_algo_id: str
+    target_doc_id: str
+    target_kb_id: str
 
 
 class FileInfo(BaseModel):
@@ -881,9 +892,9 @@ class DocumentProcessor(ModuleBase):
                 reparse_metadatas = []
                 # need transfer
                 transfer_mode = None
-                source_algo_id = None
-                source_kb_id = None
-                source_doc_ids = []
+                target_algo_id = None
+                target_kb_id = None
+                target_doc_ids = []
 
                 for file_info in file_infos:
                     if file_info.reparse_group:
@@ -896,29 +907,29 @@ class DocumentProcessor(ModuleBase):
                         new_ids.append(file_info.doc_id)
                         new_metadatas.append(file_info.metadata)
                         if file_info.transfer_params:
-                            if source_algo_id is not None and \
-                                    source_algo_id != file_info.transfer_params.source_algo_id:
-                                raise ValueError('Source algo_id must be the same')
-                            if source_kb_id is not None and \
-                                    source_kb_id != file_info.transfer_params.source_kb_id:
-                                raise ValueError('Source kb_id must be the same')
+                            if target_algo_id is not None and \
+                                    target_algo_id != file_info.transfer_params.target_algo_id:
+                                raise ValueError('target algo_id must be the same')
+                            if target_kb_id is not None and \
+                                    target_kb_id != file_info.transfer_params.target_kb_id:
+                                raise ValueError('target kb_id must be the same')
                             if transfer_mode is not None and \
                                     transfer_mode != file_info.transfer_params.mode:
                                 raise ValueError('Mode must be the same')
                             transfer_mode = file_info.transfer_params.mode
-                            source_algo_id = file_info.transfer_params.source_algo_id
-                            source_kb_id = file_info.transfer_params.source_kb_id
-                            source_doc_ids.append(file_info.transfer_params.source_doc_id)
+                            target_algo_id = file_info.transfer_params.target_algo_id
+                            target_kb_id = file_info.transfer_params.target_kb_id
+                            target_doc_ids.append(file_info.transfer_params.target_doc_id)
 
                 token = threading.Event()
                 with self._lock:
                     self._cancel_tokens[task_id] = token
                 if transfer_mode:
                     # NOTE: currently only support transfer to the same algo_id
-                    if source_algo_id not in self._processors or algo_id != source_algo_id:
-                        raise ValueError('Source algo_id must be the same')
-                    transfer_params = {'mode': transfer_mode, 'source_kb_id': source_kb_id,
-                                       'source_doc_ids': source_doc_ids}
+                    if target_algo_id not in self._processors or algo_id != target_algo_id:
+                        raise ValueError('target algo_id must be the same with original algo')
+                    transfer_params = {'mode': transfer_mode, 'target_kb_id': target_kb_id,
+                                       'target_doc_ids': target_doc_ids}
                     future = self._add_executor.submit(self._processors[algo_id].add_doc, input_files=new_input_files,
                                                        ids=new_ids, metadatas=new_metadatas,
                                                        transfer_params=transfer_params, cancel_event=token)
