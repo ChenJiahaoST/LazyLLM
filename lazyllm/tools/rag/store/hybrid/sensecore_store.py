@@ -299,7 +299,7 @@ class SenseCoreStore(LazyLLMStoreBase):
             batched_data = [
                 package(data[i:i + INSERT_BATCH_SIZE], job_type) for i in range(0, len(data), INSERT_BATCH_SIZE)
             ]
-            insert_ppl(data=batched_data, job_type=kwargs.get('type', 'insert'))
+            insert_ppl(batched_data)
             upsert_end_time = time.time()
             LOG.info(f"[SenseCore Store - upsert] Upsert done! collection_name:{collection_name}, "
                      f"Time:{upsert_end_time - upsert_start_time}s")
