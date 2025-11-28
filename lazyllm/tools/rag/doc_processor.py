@@ -1,6 +1,6 @@
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
-from typing import Dict, List, Optional, Any
+from pydantic import BaseModel, Field, BeforeValidator
+from typing import Dict, List, Optional, Any, Annotated
 from sqlalchemy import create_engine, Column, JSON, String, TIMESTAMP, Table, MetaData, inspect, delete, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Engine
@@ -310,13 +310,15 @@ class TransferParams(BaseModel):
     target_kb_id: str
 
 
+EmptyTransfer = Annotated[TransferParams | None, BeforeValidator(lambda v: None if v == {} else v)]
+
 class FileInfo(BaseModel):
     file_path: Optional[str] = None
     transformed_file_path: Optional[str] = None
     doc_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
     reparse_group: Optional[str] = None
-    transfer_params: Optional[TransferParams] = None
+    transfer_params: EmptyTransfer = None
 
 
 class DBInfo(BaseModel):
