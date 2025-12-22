@@ -100,7 +100,12 @@ class SenseCoreStore(LazyLLMStoreBase):
 
         # special requirement: item called `table_image_map` in metadata, need to upload to s3
         if data.get('meta', {}).get('table_image_map', {}):
-            for k, image_path in data['meta']['table_image_map'].items():
+            table_images = {}
+            for k, md_info in data['meta']['table_image_map'].items():
+                matches = IMAGE_PATTERN.findall(md_info)
+                if not matches:
+                    continue
+                image_path = matches[0]
                 if image_path.startswith('lazyllm'):
                     continue
                 image_name = os.path.basename(image_path)
@@ -117,11 +122,15 @@ class SenseCoreStore(LazyLLMStoreBase):
                                           aws_secret_access_key=self._s3_config['secret_access_key'],
                                           use_minio=self._s3_config['use_minio'],
                                           endpoint_url=self._s3_config['endpoint_url'])
-                        data['meta']['table_image_map'][k] = obj_key
+                        md_info = md_info.replace(image_path, obj_key)
+                        data['meta']['table_image_map'][k] = md_info
+                        table_images[md_info] = obj_key
                 except FileNotFoundError:
                     LOG.error(f"Cannot find image: {image_path} (local path {file_path}, obj key {obj_key}), skip...")
                 except Exception as e:
                     LOG.error(f"Error when uploading `{image_path}` (local path {file_path}, obj key {obj_key}) {e!r}")
+            if table_images:
+                LOG.INFO(f"[SenseCore Store - serialize_data] uploaded table images: {table_images}")
 
         if data.get('group') == LAZY_ROOT_NAME:
             obj_key = f"lazyllm/lazyllm_root/{data.get('uid')}.json"
@@ -413,12 +422,16 @@ class SenseCoreStore(LazyLLMStoreBase):
                     s['content'] = s['display_content']
                 if s.get('meta', {}).get('table_image_map', {}):
                     for k, v in s['meta']['table_image_map'].items():
-                        if not v.startswith('lazyllm'):
+                        matches = IMAGE_PATTERN.findall(v)
+                        if not matches:
+                            continue
+                        image_path = matches[0]
+                        if not image_path.startswith('lazyllm'):
                             LOG.warning(f"[SenseCore Store]: table_image_map value must start with lazyllm, value: {v}")
                             continue
-                        s['meta']['table_image_map'][k] = presign_obj_from_s3(
+                        url = presign_obj_from_s3(
                             bucket_name=self._s3_config['bucket_name'],
-                            object_key=v,
+                            object_key=image_path,
                             aws_access_key_id=self._s3_config['access_key'],
                             aws_secret_access_key=self._s3_config['secret_access_key'],
                             endpoint_url=self._s3_config['endpoint_url'],
@@ -426,6 +439,7 @@ class SenseCoreStore(LazyLLMStoreBase):
                             client_method='get_object',
                             expires_in=PRESIGN_EXPIRE_TIME,
                         )
+                        s['meta']['table_image_map'][k] = v.replace(image_path, url)
                 out.append(s)
             return out
         except Exception as e:
