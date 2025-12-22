@@ -50,6 +50,7 @@ class SenseCoreStore(LazyLLMStoreBase):
         self._uri = uri
         self._s3_config = kwargs.get('s3_config')
         self._image_url_config = kwargs.get('image_url_config')
+        self._uploaded_image_keys = set()
 
     @property
     def dir(self):
@@ -70,28 +71,42 @@ class SenseCoreStore(LazyLLMStoreBase):
         LOG.info(f"[SenseCore Store - check_s3] uploaded warmup.txt to {self._s3_config['bucket_name']}")
         return
 
+    def _upload_image_if_needed(self, file_path: str, obj_key: str):
+        if obj_key in self._uploaded_image_keys:
+            return
+
+        with open(file_path, 'rb') as f:
+            upload_data_to_s3(
+                f.read(),
+                bucket_name=self._s3_config['bucket_name'],
+                object_key=obj_key,
+                aws_access_key_id=self._s3_config['access_key'],
+                aws_secret_access_key=self._s3_config['secret_access_key'],
+                use_minio=self._s3_config['use_minio'],
+                endpoint_url=self._s3_config['endpoint_url']
+            )
+
+        self._uploaded_image_keys.add(obj_key)
+
     def _serialize_data(self, data: dict) -> Dict:  # noqa: C901
         data = dict(data)
         content = json.dumps(data.get('content', ''), ensure_ascii=False)
         matches = IMAGE_PATTERN.findall(content)
+        doc_id = data.get('doc_id', '')
+        kb_id = data.get(RAG_KB_ID, '')
         for _, image_path in matches:
             if image_path.startswith('lazyllm'):
                 continue
             image_file_name = os.path.basename(image_path)
-            obj_key = f"lazyllm/images/{image_file_name}"
+            obj_key = f"lazyllm/images/{kb_id}/{doc_id}/{image_file_name}"
             try:
                 prefix = config['image_path_prefix']
             except Exception:
                 prefix = os.getenv('RAG_IMAGE_PATH_PREFIX', '')
             file_path = create_file_path(path=image_path, prefix=prefix)
             try:
-                with open(file_path, 'rb') as f:
-                    upload_data_to_s3(f.read(), bucket_name=self._s3_config['bucket_name'], object_key=obj_key,
-                                      aws_access_key_id=self._s3_config['access_key'],
-                                      aws_secret_access_key=self._s3_config['secret_access_key'],
-                                      use_minio=self._s3_config['use_minio'],
-                                      endpoint_url=self._s3_config['endpoint_url'])
-                    content = content.replace(image_path, obj_key)
+                self._upload_image_if_needed(file_path, obj_key)
+                content = content.replace(image_path, obj_key)
             except FileNotFoundError:
                 LOG.error(f"Cannot find image path: {image_path} (local path {file_path}), skip...")
             except Exception as e:
@@ -100,7 +115,6 @@ class SenseCoreStore(LazyLLMStoreBase):
 
         # special requirement: item called `table_image_map` in metadata, need to upload to s3
         if data.get('meta', {}).get('table_image_map', {}):
-            table_images = {}
             for k, md_info in data['meta']['table_image_map'].items():
                 matches = IMAGE_PATTERN.findall(md_info)
                 if not matches:
@@ -109,31 +123,23 @@ class SenseCoreStore(LazyLLMStoreBase):
                 if image_path.startswith('lazyllm'):
                     continue
                 image_name = os.path.basename(image_path)
-                obj_key = f"lazyllm/images/{image_name}"
+                obj_key = f"lazyllm/images/{kb_id}/{doc_id}/{image_name}"
                 try:
                     prefix = config['image_path_prefix']
                 except Exception:
                     prefix = os.getenv('RAG_IMAGE_PATH_PREFIX', '')
                 file_path = create_file_path(path=image_path, prefix=prefix)
                 try:
-                    with open(file_path, 'rb') as f:
-                        upload_data_to_s3(f.read(), bucket_name=self._s3_config['bucket_name'], object_key=obj_key,
-                                          aws_access_key_id=self._s3_config['access_key'],
-                                          aws_secret_access_key=self._s3_config['secret_access_key'],
-                                          use_minio=self._s3_config['use_minio'],
-                                          endpoint_url=self._s3_config['endpoint_url'])
-                        md_info = md_info.replace(image_path, obj_key)
-                        data['meta']['table_image_map'][k] = md_info
-                        table_images[md_info] = obj_key
+                    self._upload_image_if_needed(file_path, obj_key)
+                    md_info = md_info.replace(image_path, obj_key)
+                    data['meta']['table_image_map'][k] = md_info
                 except FileNotFoundError:
                     LOG.error(f"Cannot find image: {image_path} (local path {file_path}, obj key {obj_key}), skip...")
                 except Exception as e:
                     LOG.error(f"Error when uploading `{image_path}` (local path {file_path}, obj key {obj_key}) {e!r}")
-            if table_images:
-                LOG.info(f"[SenseCore Store - serialize_data] uploaded table images: {table_images}")
 
         if data.get('group') == LAZY_ROOT_NAME:
-            obj_key = f"lazyllm/lazyllm_root/{data.get('uid')}.json"
+            obj_key = f"lazyllm/lazyllm_root/{kb_id}/{doc_id}/{data.get('uid')}.json"
             upload_data_to_s3(content.encode('utf-8'), bucket_name=self._s3_config['bucket_name'], object_key=obj_key,
                               aws_access_key_id=self._s3_config['access_key'],
                               aws_secret_access_key=self._s3_config['secret_access_key'],
@@ -166,14 +172,9 @@ class SenseCoreStore(LazyLLMStoreBase):
         if data.get('type') == SegmentType.IMAGE.value and data.get('image_keys'):
             image_path = data.get('image_keys', [])[0]
             image_file_name = os.path.basename(image_path)
-            obj_key = f"lazyllm/images/{image_file_name}"
+            obj_key = f"lazyllm/images/{kb_id}/{doc_id}/{image_file_name}"
             try:
-                with open(image_path, 'rb') as f:
-                    upload_data_to_s3(f.read(), bucket_name=self._s3_config['bucket_name'], object_key=obj_key,
-                                      aws_access_key_id=self._s3_config['access_key'],
-                                      aws_secret_access_key=self._s3_config['secret_access_key'],
-                                      use_minio=self._s3_config['use_minio'],
-                                      endpoint_url=self._s3_config['endpoint_url'])
+                self._upload_image_if_needed(image_path, obj_key)
                 segment.image_keys = [obj_key]
             except FileNotFoundError:
                 LOG.error(f"Cannot find image path: {image_path} (local path {image_path}), skip...")
@@ -186,20 +187,15 @@ class SenseCoreStore(LazyLLMStoreBase):
                 if image_path.startswith('lazyllm'):
                     continue
                 image_file_name = os.path.basename(image_path)
-                obj_key = f"lazyllm/images/{image_file_name}"
+                obj_key = f"lazyllm/images/{kb_id}/{doc_id}/{image_file_name}"
                 try:
                     prefix = config['image_path_prefix']
                 except Exception:
                     prefix = os.getenv('RAG_IMAGE_PATH_PREFIX', '')
                 file_path = create_file_path(path=image_path, prefix=prefix)
                 try:
-                    with open(file_path, 'rb') as f:
-                        upload_data_to_s3(f.read(), bucket_name=self._s3_config['bucket_name'], object_key=obj_key,
-                                          aws_access_key_id=self._s3_config['access_key'],
-                                          aws_secret_access_key=self._s3_config['secret_access_key'],
-                                          use_minio=self._s3_config['use_minio'],
-                                          endpoint_url=self._s3_config['endpoint_url'])
-                        answer = answer.replace(image_path, obj_key)
+                    self._upload_image_if_needed(file_path, obj_key)
+                    answer = answer.replace(image_path, obj_key)
                 except FileNotFoundError:
                     LOG.error(f"Cannot find image path: {image_path} (local path {file_path}), skip...")
                 except Exception as e:
