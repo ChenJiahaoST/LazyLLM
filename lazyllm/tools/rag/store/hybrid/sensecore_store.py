@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any, Union, Set
 
 from ..store_base import (LazyLLMStoreBase, StoreCapability, LAZY_ROOT_NAME, IMAGE_PATTERN, INSERT_BATCH_SIZE,
                           DEFAULT_KB_ID, SegmentType)
-from ..utils import upload_data_to_s3, download_data_from_s3, fibonacci_backoff, create_file_path
+from ..utils import upload_data_to_s3, download_data_from_s3, fibonacci_backoff, create_file_path, presign_obj_from_s3
 
 from ...data_type import DataType
 from ...global_metadata import GlobalMetadataDesc, RAG_DOC_ID, RAG_KB_ID
@@ -18,6 +18,8 @@ from ...global_metadata import GlobalMetadataDesc, RAG_DOC_ID, RAG_KB_ID
 from lazyllm import warp, pipeline, LOG, config, package
 from lazyllm.common import override
 from lazyllm.thirdparty import boto3
+
+PRESIGN_EXPIRE_TIME = 3600 * 24 * 7
 
 
 class Segment(BaseModel):
@@ -95,6 +97,31 @@ class SenseCoreStore(LazyLLMStoreBase):
             except Exception as e:
                 LOG.error(f"Error when uploading `{image_path}` {e!r}")
         data['content'] = json.loads(content)
+
+        # special requirement: item called `table_image_map` in metadata, need to upload to s3
+        if data.get('meta', {}).get('table_image_map', {}):
+            for k, image_path in data['meta']['table_image_map'].items():
+                if image_path.startswith('lazyllm'):
+                    continue
+                image_name = os.path.basename(image_path)
+                obj_key = f"lazyllm/images/{image_name}"
+                try:
+                    prefix = config['image_path_prefix']
+                except Exception:
+                    prefix = os.getenv('RAG_IMAGE_PATH_PREFIX', '')
+                file_path = create_file_path(path=image_path, prefix=prefix)
+                try:
+                    with open(file_path, 'rb') as f:
+                        upload_data_to_s3(f.read(), bucket_name=self._s3_config['bucket_name'], object_key=obj_key,
+                                          aws_access_key_id=self._s3_config['access_key'],
+                                          aws_secret_access_key=self._s3_config['secret_access_key'],
+                                          use_minio=self._s3_config['use_minio'],
+                                          endpoint_url=self._s3_config['endpoint_url'])
+                        data['meta']['table_image_map'][k] = obj_key
+                except FileNotFoundError:
+                    LOG.error(f"Cannot find image: {image_path} (local path {file_path}, obj key {obj_key}), skip...")
+                except Exception as e:
+                    LOG.error(f"Error when uploading `{image_path}` (local path {file_path}, obj key {obj_key}) {e!r}")
 
         if data.get('group') == LAZY_ROOT_NAME:
             obj_key = f"lazyllm/lazyllm_root/{data.get('uid')}.json"
@@ -377,14 +404,33 @@ class SenseCoreStore(LazyLLMStoreBase):
             return []
 
     def _apply_display(self, segments: List[dict]) -> List[dict]:
-        out = []
-        for s in segments:
-            if not s.get('is_active', True):
-                continue
-            if s.get('display_content'):
-                s['content'] = s['display_content']
-            out.append(s)
-        return out
+        try:
+            out = []
+            for s in segments:
+                if not s.get('is_active', True):
+                    continue
+                if s.get('display_content'):
+                    s['content'] = s['display_content']
+                if s.get('meta', {}).get('table_image_map', {}):
+                    for k, v in s['meta']['table_image_map'].items():
+                        if not v.startswith('lazyllm'):
+                            LOG.warning(f"[SenseCore Store]: table_image_map value must start with lazyllm, value: {v}")
+                            continue
+                        s['meta']['table_image_map'][k] = presign_obj_from_s3(
+                            bucket_name=self._s3_config['bucket_name'],
+                            object_key=v,
+                            aws_access_key_id=self._s3_config['access_key'],
+                            aws_secret_access_key=self._s3_config['secret_access_key'],
+                            endpoint_url=self._s3_config['endpoint_url'],
+                            region_name=self._s3_config['region_name'],
+                            client_method='get_object',
+                            expires_in=PRESIGN_EXPIRE_TIME,
+                        )
+                out.append(s)
+            return out
+        except Exception as e:
+            LOG.error(f"[SenseCore Store - apply display]:task failed: {e}")
+            return segments
 
     def _multi_modal_process(self, query: str, images: List[str]):
         urls = []
@@ -439,11 +485,7 @@ class SenseCoreStore(LazyLLMStoreBase):
             response = requests.post(url, headers=headers, json=payload)
             response.raise_for_status()
             segments = response.json()['segments']
-            segments = [s for s in segments if s['is_active']]
-            for s in segments:
-                if len(s.get('display_content', '')):
-                    s['content'] = s['display_content']
-            return [self._deserialize_data(s) for s in segments]
+            return [self._deserialize_data(s) for s in self._apply_display(segments)]
         except Exception as e:
             LOG.error(f"SenseCore Store: query task failed: {e}")
             raise e
