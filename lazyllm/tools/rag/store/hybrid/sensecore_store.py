@@ -251,7 +251,7 @@ class SenseCoreStore(LazyLLMStoreBase):
                     aws_access_key_id=self._s3_config['access_key'],
                     aws_secret_access_key=self._s3_config['secret_access_key'],
                     endpoint_url=self._s3_config['endpoint_url'],
-                    region_name=self._s3_config['region_name'],
+                    region_name=self._s3_config.get('region_name', 'us-east-1'),
                     client_method='get_object',
                     expires_in=PRESIGN_EXPIRE_TIME,
                 )
