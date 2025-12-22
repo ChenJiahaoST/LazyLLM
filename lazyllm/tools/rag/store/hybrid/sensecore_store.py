@@ -130,7 +130,7 @@ class SenseCoreStore(LazyLLMStoreBase):
                 except Exception as e:
                     LOG.error(f"Error when uploading `{image_path}` (local path {file_path}, obj key {obj_key}) {e!r}")
             if table_images:
-                LOG.INFO(f"[SenseCore Store - serialize_data] uploaded table images: {table_images}")
+                LOG.info(f"[SenseCore Store - serialize_data] uploaded table images: {table_images}")
 
         if data.get('group') == LAZY_ROOT_NAME:
             obj_key = f"lazyllm/lazyllm_root/{data.get('uid')}.json"
