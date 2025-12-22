@@ -566,7 +566,7 @@ class DocumentProcessor(ModuleBase):
 
                     if capacity <= 0:
                         LOG.warning(f'[Poller] capacity: {capacity} <= 0, sleep 0.2s')
-                        time.sleep(0.2)
+                        time.sleep(10)
                         continue
                     params = {'worker_id': self._poller_id}
                     resp = requests.get(self._queue_get_url, headers=headers, timeout=10, params=params)
@@ -574,7 +574,7 @@ class DocumentProcessor(ModuleBase):
                         LOG.warning(f'[Poller] get empty response, resp.status_code: {resp.status_code},'
                                     f' resp.content: {resp.content}, sleep {empty_backoff}s...')
                         time.sleep(empty_backoff)
-                        empty_backoff = min(empty_backoff * 1.5, 5.0)
+                        empty_backoff = min(empty_backoff * 1.5, 10.0)
                         continue
 
                     resp.raise_for_status()
@@ -586,7 +586,7 @@ class DocumentProcessor(ModuleBase):
                     if not task:
                         LOG.warning(f'[Poller] resp get empty task, sleep {empty_backoff}s...')
                         time.sleep(empty_backoff)
-                        empty_backoff = min(empty_backoff * 1.5, 5.0)
+                        empty_backoff = min(empty_backoff * 1.5, 10.0)
                         continue
                     LOG.info(f'[Poller] resp {data}')
                     if worker_id != self._poller_id:
