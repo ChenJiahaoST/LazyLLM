@@ -105,7 +105,7 @@ class SenseCoreStore(LazyLLMStoreBase):
                 matches = IMAGE_PATTERN.findall(md_info)
                 if not matches:
                     continue
-                image_path = matches[0]
+                image_path = matches[0][1]
                 if image_path.startswith('lazyllm'):
                     continue
                 image_name = os.path.basename(image_path)
@@ -425,7 +425,7 @@ class SenseCoreStore(LazyLLMStoreBase):
                         matches = IMAGE_PATTERN.findall(v)
                         if not matches:
                             continue
-                        image_path = matches[0]
+                        image_path = matches[0][1]
                         if not image_path.startswith('lazyllm'):
                             LOG.warning(f"[SenseCore Store]: table_image_map value must start with lazyllm, value: {v}")
                             continue
