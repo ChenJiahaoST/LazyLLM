@@ -237,25 +237,21 @@ class SenseCoreStore(LazyLLMStoreBase):
             data['content'] = json.loads(content)
 
         if display and data.get('meta', {}).get('table_image_map', {}):
-            for k, v in data['meta']['table_image_map'].items():
-                matches = IMAGE_PATTERN.findall(v)
-                if not matches:
-                    continue
-                image_path = matches[0][1]
-                if not image_path.startswith('lazyllm'):
-                    LOG.warning(f"[SenseCore Store]: table_image value must start with lazyllm, value: {image_path}")
+            for k, obj_key in data['meta']['table_image_map'].items():
+                if not obj_key.startswith('lazyllm'):
+                    LOG.warning(f"[SenseCore Store]: table_image value must start with lazyllm, value: {obj_key}")
                     continue
                 url = presign_obj_from_s3(
                     bucket_name=self._s3_config['bucket_name'],
-                    object_key=image_path,
+                    object_key=obj_key,
                     aws_access_key_id=self._s3_config['access_key'],
                     aws_secret_access_key=self._s3_config['secret_access_key'],
-                    endpoint_url=self._s3_config['endpoint_url'],
+                    endpoint_url=self._s3_config.get('external_endpoint_url', self._s3_config['endpoint_url']),
                     region_name=self._s3_config.get('region_name', 'us-east-1'),
                     client_method='get_object',
                     expires_in=PRESIGN_EXPIRE_TIME,
                 )
-                data['meta']['table_image_map'][k] = v.replace(image_path, url)
+                data['meta']['table_image_map'][k] = url
         return data
 
     def _create_filters_str(self, filters: Dict[str, Union[str, int, List, Set]]) -> str:
