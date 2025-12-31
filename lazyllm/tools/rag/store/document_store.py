@@ -181,7 +181,7 @@ class _DocumentStore(object):
         except Exception as e:
             LOG.error(f'[_DocumentStore - {self._algo_name}] Failed to update nodes: {e}')
             LOG.error(traceback.format_exc())
-            raise
+            raise e
 
     def remove_nodes(self, uids: Optional[List[str]] = None, doc_ids: Optional[Set] = None,
                      group: Optional[str] = None, kb_id: Optional[str] = None, **kwargs) -> None:
@@ -282,7 +282,12 @@ class _DocumentStore(object):
                     LOG.warning(f'[_DocumentStore - {self._algo_name}] Group {group} is not active, skip')
                     continue
                 for i in range(0, len(segments), INSERT_BATCH_SIZE):
-                    self.impl.upsert(self._gen_collection_name(group), segments[i:i + INSERT_BATCH_SIZE], **kwargs)
+                    success = self.impl.upsert(
+                        self._gen_collection_name(group), segments[i:i + INSERT_BATCH_SIZE], **kwargs
+                    )
+                    if not success:
+                        LOG.error(f'[_DocumentStore - {self._algo_name}] Failed to upsert segments')
+                        raise RuntimeError('Failed to upsert segments')
         except Exception as e:
             LOG.error(f'[_DocumentStore - {self._algo_name}] Failed to update segments: {e}')
             raise e

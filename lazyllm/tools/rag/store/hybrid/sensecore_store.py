@@ -319,7 +319,7 @@ class SenseCoreStore(LazyLLMStoreBase):
         headers = {'Accept': 'application/json'}
         check_start_time = time.time()
         flag = False
-        for wait_time in fibonacci_backoff(max_retries=15):
+        for wait_time in fibonacci_backoff(max_retries=16):
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             status = response.json()['state']
@@ -478,7 +478,7 @@ class SenseCoreStore(LazyLLMStoreBase):
             payload = {'query': query, 'hybrid_search_datasets': hybrid_search_datasets, 'hybrid_search_type': 2,
                        'top_k': topk, 'filters': filter_str, 'group': self._get_group_name(collection_name),
                        'embedding_model': embed_key, 'images': images}
-            response = requests.post(url, headers=headers, json=payload)
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             segments = response.json()['segments']
             segments = [s for s in segments if s.get('is_active', True)]
