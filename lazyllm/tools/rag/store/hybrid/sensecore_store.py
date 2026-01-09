@@ -256,7 +256,6 @@ class SenseCoreStore(LazyLLMStoreBase):
                     expires_in=PRESIGN_EXPIRE_TIME,
                 )
                 data['meta']['table_image_map'][k] = v.replace(image_path, url)
-                LOG.info(f"[SenseCore Store]: table_image_map value: {data['meta']['table_image_map'][k]}")
         return data
 
     def _create_filters_str(self, filters: Dict[str, Union[str, int, List, Set]]) -> str:
