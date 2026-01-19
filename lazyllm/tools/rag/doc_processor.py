@@ -814,10 +814,10 @@ class DocumentProcessor(ModuleBase):
         def _attach_done(self, task_id, future, callback_path, db_info=None, file_infos=None):
             def _on_done(fut):
                 ok = False
-                err = ""
+                err = ''
                 try:
                     if fut.cancelled():
-                        err = "canceled"
+                        err = 'canceled'
                     else:
                         ex = fut.exception()
                         if ex:
