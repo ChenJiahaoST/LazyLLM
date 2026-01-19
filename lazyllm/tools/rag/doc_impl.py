@@ -1,9 +1,7 @@
 import json
-import ast
 import threading
 import time
 from enum import Enum
-from functools import wraps
 from typing import Callable, Dict, List, Optional, Set, Union, Tuple, Any
 from lazyllm import LOG, once_wrapper
 from .transform import (NodeTransform, FuncNodeTransform, SentenceSplitter, LLMParser,
@@ -16,42 +14,11 @@ from .data_loaders import DirectoryReader
 from .utils import DocListManager
 from .global_metadata import GlobalMetadataDesc, RAG_KB_ID
 from .doc_processor import _Processor, DocumentProcessor
+from .embed_wrapper import _EmbedWrapper
 from dataclasses import dataclass
 from itertools import repeat
 
 _transmap = dict(function=FuncNodeTransform, sentencesplitter=SentenceSplitter, llm=LLMParser)
-
-def embed_wrapper(func: Optional[Callable[..., Any]]) -> Optional[Callable[..., List[float]]]:
-    if not func:
-        return None
-
-    @wraps(func)
-    def wrapper(*args, **kwargs) -> List[float]:
-        result = func(*args, **kwargs)
-        if isinstance(result, str):
-            try:
-                # Use json.loads as it's generally more robust for list-like strings
-                return json.loads(result)
-            except json.JSONDecodeError:
-                # Fallback or raise error if json.loads also fails
-                # For example, if ast.literal_eval was truly necessary for some non-JSON compatible Python literal
-                try:
-                    LOG.warning("json.loads failed, attempting ast.literal_eval as a "
-                                "fallback (might hit recursion limit).")
-                    return ast.literal_eval(result)
-                except Exception as e:
-                    LOG.error(f"Both json.loads and ast.literal_eval failed. Error: {e}")
-                    raise  # Re-raise the original or a new error
-        # Explicitly check if it's already a list for dense embedding or dict for sparse embedding
-        elif isinstance(result, (list, dict)):
-            return result
-        else:
-            # Handle unexpected types by raising an error
-            error_message = f"Expected List[float] or str (convertible to List[float]), but got {type(result)}"
-            LOG.error(f"{error_message}")
-            raise TypeError(error_message)
-
-    return wrapper
 
 class StorePlaceholder:
     pass
@@ -111,7 +78,7 @@ class DocImpl:
             LAZY_ROOT_NAME: dict(parent=None, display_name='Original Source', group_type=NodeGroupType.ORIGINAL),
             LAZY_IMAGE_GROUP: dict(parent=None, display_name='Image Node', group_type=NodeGroupType.OTHER)
         }
-        self.embed = {k: embed_wrapper(e) for k, e in embed.items()}
+        self.embed = {k: _EmbedWrapper(e) for k, e in embed.items()}
         self._global_metadata_desc = global_metadata_desc
         self.store = store  # NOTE: will be initialized in _lazy_init()
         self._activated_groups = set([LAZY_ROOT_NAME, LAZY_IMAGE_GROUP])
@@ -205,7 +172,7 @@ class DocImpl:
                                        num_workers=num_workers, kwargs=kwargs)
 
         if name in groups:
-            LOG.warning(f"Duplicate group name: {name}")
+            LOG.warning(f'Duplicate group name: {name}')
         for t in (transforms if isinstance(transform, list) else [transforms]):
             if isinstance(t.f, str):
                 t.f = _transmap[t.f.lower()]
@@ -216,7 +183,7 @@ class DocImpl:
                     'between nodes may become unreliable, `Document.get_parent/get_child` functions and the '
                     'target parameter of Retriever may have strange anomalies. Please use it at your own risk.')
             else:
-                assert callable(t.f), f"transform should be callable, but get {t.f}"
+                assert callable(t.f), f'transform should be callable, but get {t.f}'
         groups[name] = dict(transform=transforms, parent=parent, display_name=display_name or name,
                             group_type=group_type)
 
@@ -254,7 +221,7 @@ class DocImpl:
 
         def decorator(klass):
             if callable(klass): cls._registered_file_reader[pattern] = klass
-            else: raise TypeError(f"The registered object {klass} is not a callable object.")
+            else: raise TypeError(f'The registered object {klass} is not a callable object.')
             return klass
         return decorator
 
@@ -274,6 +241,7 @@ class DocImpl:
     def add_reader(self, pattern: str, func: Optional[Callable] = None):
         assert callable(func), 'func for reader should be callable'
         self._local_file_reader[pattern] = func
+        self._reader._lazy_init.flag.reset()
 
     def _add_doc_to_store_with_status(self, input_files: List[str], ids: List[str], metadatas: List[Dict[str, Any]],
                                       cond_status_list: Optional[List[str]] = None):
@@ -284,7 +252,7 @@ class DocImpl:
                                        metadatas=[metadata] if metadata is not None else None)
                 success_ids.append(doc_id)
             except Exception as e:
-                LOG.error(f"Error adding document {doc_id} ({filepath}) to store: {e}")
+                LOG.error(f'Error adding document {doc_id} ({filepath}) to store: {e}')
                 failed_ids.append(doc_id)
 
         if success_ids:
@@ -366,9 +334,11 @@ class DocImpl:
     def _delete_doc_from_store(self, doc_ids: List[str] = None) -> None:
         self._processor.delete_doc(doc_ids=doc_ids)
 
-    def activate_group(self, group_name: str, embed_keys: List[str]):
+    def activate_group(self, group_name: str, embed_keys: Optional[List[str]] = None, enable_embed: bool = True):
         group_name = str(group_name)
         self._activated_groups.add(group_name)
+        if embed_keys is None and enable_embed:
+            embed_keys = self.embed.keys()
         if embed_keys:
             activated_embeddings = self._activated_embeddings.setdefault(group_name, set())
             if len(set(embed_keys) - activated_embeddings) == 0: return
@@ -396,7 +366,7 @@ class DocImpl:
         if index and index != 'default':
             query_instance = self.store.get_index(type=index)
             if query_instance is None:
-                raise NotImplementedError(f"Index type '{index}' is not registered in the store.")
+                raise NotImplementedError(f'Index type "{index}" is not registered in the store.')
         else:
             query_instance = self.store.get_index(type='default') or self.store
         try:
@@ -445,7 +415,7 @@ class DocImpl:
             nodes = self.find_children(nodes, next_group)
 
         if not nodes:
-            LOG.warning(f"We can not find any nodes for group `{group}`, please check your input")
+            LOG.warning(f'We can not find any nodes for group `{group}`, please check your input')
             return []
         return nodes
 
@@ -456,9 +426,9 @@ class DocImpl:
             result = self._find_parent_with_uid(nodes, group)
         if not result:
             LOG.warning(
-                f"We can not find any nodes for group `{group}`, please check your input"
+                f'We can not find any nodes for group `{group}`, please check your input'
             )
-        LOG.debug(f"Found parent node for {group}: {result}")
+        LOG.debug(f'Found parent node for {group}: {result}')
         return result
 
     def _find_parent_with_node(self, nodes: list[DocNode], group: str):
@@ -493,8 +463,8 @@ class DocImpl:
         kb_id = nodes[0].global_metadata.get(RAG_KB_ID, None)
         result = self.store.get_nodes(group=group, kb_id=kb_id, parent=[n._uid for n in nodes], display=True)
         if not result:
-            LOG.warning(f"We cannot find any nodes for group `{group}`, please check your input.")
-        LOG.debug(f"Found children nodes for {group}: {result}")
+            LOG.warning(f'We cannot find any nodes for group `{group}`, please check your input.')
+        LOG.debug(f'Found children nodes for {group}: {result}')
         return list(result)
 
     def clear_cache(self, group_names: Optional[List[str]] = None):

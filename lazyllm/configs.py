@@ -49,12 +49,13 @@ class Config(object):
         yield
         self.impl[name] = old_value
 
-    def add(self, name: str, type: type, default: Optional[Union[int, str, bool]] = None, env: Union[str, dict] = None):
+    def add(self, name: str, type: type, default: Optional[Union[int, str, bool]] = None, env: Union[str, dict] = None,
+            *, options: Optional[List] = None):
         update_params = (type, default, env)
         if name not in self._config_params or self._config_params[name] != update_params:
             if name in self._config_params:
-                logging.warning(f"The default configuration parameter {name}({self._config_params[name]}) "
-                                f"has been added, but a new {name}({update_params}) has been added repeatedly.")
+                logging.warning(f'The default configuration parameter {name}({self._config_params[name]}) '
+                                f'has been added, but a new {name}({update_params}) has been added repeatedly.')
             self._config_params.update({name: update_params})
             if isinstance(env, str):
                 self._env_map_name[('lazyllm_' + env).upper()] = name
@@ -111,4 +112,5 @@ config = Config().add('mode', Mode, Mode.Normal, dict(DISPLAY=Mode.Display, DEBU
                 ).add('infer_log_root', str, os.path.join(os.getcwd(), 'infer_log'), 'INFER_LOG_ROOT'
                 ).add('temp_dir', str, os.path.join(os.getcwd(), '.temp'), 'TEMP_DIR'
                 ).add('thread_pool_worker_num', int, 16, 'THREAD_POOL_WORKER_NUM'
+                ).add('deploy_skip_check_kw', bool, False, 'DEPLOY_SKIP_CHECK_KW'
                 )

@@ -1,4 +1,5 @@
-from fastapi import HTTPException
+from lazyllm.tools.rag.data_loaders import DirectoryReader
+from lazyllm.thirdparty import fastapi
 from pydantic import BaseModel, Field, BeforeValidator
 from typing import Dict, List, Optional, Any, Annotated
 from sqlalchemy import create_engine, Column, JSON, String, TIMESTAMP, Table, MetaData, inspect, delete, text
@@ -11,7 +12,6 @@ from .store.store_base import DEFAULT_KB_ID
 from .store.document_store import _DocumentStore
 from .store.utils import fibonacci_backoff, create_file_path
 from .transform import (AdaptiveTransform, make_transform,)
-from .readers import ReaderBase
 from .doc_node import DocNode
 from .utils import gen_docid, ensure_call_endpoint, BaseResponse
 from .global_metadata import RAG_DOC_ID, RAG_DOC_PATH, RAG_KB_ID
@@ -33,7 +33,7 @@ USE_TRANSFORMED_FILE = os.getenv('RAG_USE_TRANSFORMED_FILE', 'false').lower() ==
 
 
 class _Processor:
-    def __init__(self, store: _DocumentStore, reader: ReaderBase, node_groups: Dict[str, Dict],
+    def __init__(self, store: _DocumentStore, reader: DirectoryReader, node_groups: Dict[str, Dict],
                  display_name: Optional[str] = None, description: Optional[str] = None,
                  server: bool = False):
         self._store = store
@@ -66,16 +66,15 @@ class _Processor:
                 self._transfer_impl(doc_ids=ids, metadatas=metadatas, **transfer_params, cancel_event=cancel_event)
                 pass
             else:
-                root_nodes, image_nodes = self._reader.load_data(input_files, metadatas, split_image_nodes=True)
+                root_nodes = self._reader.load_data(input_files, metadatas, split_nodes_by_type=True)
                 parse_end_time = time.time()
-                if cancel_event and cancel_event.is_set():
-                    LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}')
-                    raise RuntimeError('Task canceled!')
-                self._store.update_nodes(self._set_nodes_number(root_nodes))
-                self._create_nodes_recursive(root_nodes, LAZY_ROOT_NAME, cancel_event=cancel_event)
-                if image_nodes:
-                    self._store.update_nodes(self._set_nodes_number(image_nodes))
-                    self._create_nodes_recursive(image_nodes, LAZY_IMAGE_GROUP, cancel_event=cancel_event)
+                for k, v in root_nodes.items():
+                    if not v: continue
+                    if cancel_event and cancel_event.is_set():
+                        LOG.info(f'[_Processor - add_doc] Task canceled! files:{input_files}')
+                        raise RuntimeError('Task canceled!')
+                    self._store.update_nodes(self._set_nodes_number(v))
+                    self._create_nodes_recursive(v, k, cancel_event=cancel_event)
             add_end_time = time.time()
             LOG.info(f'[_Processor - add_doc] Add documents done! files:{input_files}, '
                      f'Total Time:{add_end_time - add_start_time}s, '
@@ -415,7 +414,7 @@ class DocumentProcessor(ModuleBase):
             self._inited = True
             LOG.info(f'[DocumentProcessor] init done. feedback_url {self._feedback_url}, prefix {self._path_prefix}')
 
-        def register_algorithm(self, name: str, store: _DocumentStore, reader: ReaderBase,
+        def register_algorithm(self, name: str, store: _DocumentStore, reader: DirectoryReader,
                                node_groups: Dict[str, Dict], display_name: Optional[str] = None,
                                description: Optional[str] = None, force_refresh: bool = False):
             self._init_components(server=self._server)
@@ -756,7 +755,7 @@ class DocumentProcessor(ModuleBase):
         async def cancel_task(self, request: CancelDocRequest):  # noqa: C901
             if self._draining:
                 LOG.warning('[Cancel task] system is draining')
-                raise HTTPException(status_code=503, detail='system is draining')
+                raise fastapi.HTTPException(status_code=503, detail='system is draining')
             task_id = request.task_id
             data = {'task_id': task_id, 'status': 0, 'task_status': 0, 'message': 'canceled'}
             if task_id in self._pending_task_ids:
@@ -768,7 +767,7 @@ class DocumentProcessor(ModuleBase):
                 return BaseResponse(code=200, msg='success', data=data)
             if task_id not in self._tasks:
                 LOG.warning(f'[Cancel task] task {task_id} not found')
-                raise HTTPException(status_code=404, detail='task not found')
+                raise fastapi.HTTPException(status_code=404, detail='task not found')
             entry = self._tasks.get(task_id)
             future = None
             if hasattr(entry, 'done') and hasattr(entry, 'cancel'):
@@ -780,7 +779,7 @@ class DocumentProcessor(ModuleBase):
                         break
             else:
                 LOG.error(f'[Cancel task] Invalid task entry: {entry}')
-                raise HTTPException(status_code=500, detail='Invalid task entry')
+                raise fastapi.HTTPException(status_code=500, detail='Invalid task entry')
 
             if future and not future.done():
                 cancel_token = self._cancel_tokens.get(task_id)
@@ -810,7 +809,7 @@ class DocumentProcessor(ModuleBase):
                         return BaseResponse(code=200, msg='task already finished', data=data)
                 except Exception as e:
                     LOG.error(f'[Cancel task] error: {e}')
-                    raise HTTPException(status_code=500, detail=f'error: {e}')
+                    raise fastapi.HTTPException(status_code=500, detail=f'error: {e}')
 
         def _attach_done(self, task_id, future, callback_path, db_info=None, file_infos=None):
             def _on_done(fut):
@@ -1010,7 +1009,7 @@ class DocumentProcessor(ModuleBase):
         else:
             getattr(impl, method)(*args, **kwargs)
 
-    def register_algorithm(self, name: str, store: _DocumentStore, reader: ReaderBase, node_groups: Dict[str, Dict],
+    def register_algorithm(self, name: str, store: _DocumentStore, reader: DirectoryReader, node_groups: Dict[str, Dict],
                            display_name: Optional[str] = None, description: Optional[str] = None,
                            force_refresh: bool = False, **kwargs):
         self._dispatch('register_algorithm', name, store, reader, node_groups,

@@ -34,6 +34,7 @@ documents = lazyllm.Document(dataset_path="/path/to/your/doc/dir",
 retriever = lazyllm.Retriever(doc=documents,
                               group_name="CoarseChunk",
                               similarity="bm25_chinese",
+                              similarity_cut_off=0.003,
                               topk=3)
 
 # Part3
@@ -69,7 +70,7 @@ print(f"answer: {res}")
 
 1. Part0 导入了 `lazyllm`。
 
-2. Part1 从本地加载知识库目录，并使用内置的 `OnlineEmbeddingModule` 作为 embedding 函数。
+2. Part1 从本地加载知识库目录，并使用内置的 `OnlineEmbeddingModule` 作为向量模型。
 
 3. Part2 创建一个用于检索文档的 `Retriever`，并使用内置的 `CoarseChunk`（参考 [CoarseChunk 的定义][llm.tools.Retriever]）将文档按指定的大小分块，然后使用内置的 `bm25_chinese` 作为相似度计算函数，并且丢弃相似度小于 0.003 的结果，最后取最相近的 3 篇文档。
 
@@ -169,6 +170,7 @@ documents.create_node_group(name="sentences",
 retriever1 = lazyllm.Retriever(doc=documents,
                                group_name="CoarseChunk",
                                similarity="bm25_chinese",
+                               similarity_cut_off=0.003,
                                topk=3)
 
 retriever2 = lazyllm.Retriever(doc=documents,
@@ -216,7 +218,55 @@ print(f"answer: {res}")
 
 </details>
 
-## 版本-3：使用 flow
+## 版本-3：自定义文档解析工具，以MinerU为例
+
+lazyllm 内置了一套默认的文档解析算法。如果需要更高定制化的文档解析，可以使用自定义的文档解析器。
+[MinerU](https://github.com/opendatalab/MinerU) 是业界领先的 PDF 文档解析工具。我们为 MinerU 提供了专门的接入组件，无需额外定制，即可顺畅集成。
+
+目前提供一键启动的 MinerU 服务端（server）以及配套的 PDF 客户端。使用流程如下：先在本地启动 MinerU 解析服务，再通过接入 `MineruPDFReader` 获取解析后的文档内容。
+
+### 启动 MinerU 服务
+在开始之前，请先安装 MinerU 依赖：
+
+```bash
+lazyllm install mineru
+```
+> **提示**：为确保解析结果稳定，当前固定 MinerU 版本为2.5.4。服务运行所需资源请参考 [MinerU](https://github.com/opendatalab/MinerU)  官方文档。
+
+环境准备完毕后，通过以下命令一键部署服务：
+
+```bash
+lazyllm deploy mineru [--port <port>] [--cache_dir <cache_dir>] [--image_save_dir <image_save_dir>] [--model_source <model_source>]
+```
+
+** 参数说明 **
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--port` | 服务端口号 | **随机分配** |
+| `--cache_dir` | 文档解析缓存目录（设置后相同文档无需重复解析） | **None** |
+| `--image_save_dir` | 图片输出目录（设置后保存文档内提取的图片） | **None** |
+| `--model_source` | 模型来源（可选：`huggingface` 或 `modelscope`） | **huggingface** |
+
+
+> **提示**：所有参数均为可缺省，执行 lazyllm deploy mineru 即可启动默认服务。若希望持久化缓存解析结果和图片，请自行指定目录路径。
+
+### 通过 reader 无缝接入 MinerU 服务
+
+在RAG流程中，我们在 Part1 为 `documents` 对象注册用于PDF文件解析的解析器：
+
+```python
+from lazyllm.tools.rag.readers import MineruPDFReader
+
+# 注册 PDF 解析器，url 替换为已启动的 MinerU 服务地址
+documents.add_reader("*.pdf", MineruPDFReader(url="http://127.0.0.1:8888"))
+
+```
+
+其余流程保持不变，即可将 MinerU 服务集成到 RAG 流程中，实现 PDF 文档解析。
+
+
+## 版本-4：使用 flow
 
 从 版本-2 的流程图可以看到整个流程已经比较复杂了。我们注意到两个（或多个）`Retriever` 的检索过程互不影响，它们可以并行执行。同时整个流程上下游之间也有着明确的依赖关系，需要保证上游执行完成之后才可以进行下一步。
 
@@ -284,7 +334,7 @@ print(f"answer: {res}")
 
 `pipeline` 和 `parallel` 只是方便流程搭建以及可能的一些性能优化，并不会改成程序的逻辑。另外用户查询作为重要的提示内容，基本是中间每个模块都会用到，我们在这里还用了 `LazyLLM` 提供的 [bind()](../Best%20Practice/flow.md#use-bind) 函数将用户查询 `query` 作为参数传给 `ppl.reranker` 和 `ppl.formatter`。
 
-## 版本-4：自定义检索和排序策略
+## 版本-5：自定义检索和排序策略
 
 上面的例子使用的都是 `LazyLLM` 内置的组件。现实中总有我们覆盖不到的用户需求，为了满足这些需求，`Retriever` 和 `Reranker` 提供了插件机制，用户可以自定义检索和排序策略，通过 `LazyLLM` 提供的注册接口添加到框架中。
 
@@ -323,17 +373,18 @@ my_reranker = Reranker(name="MyReranker")
 
 这里只是简单介绍了怎么使用 `LazyLLM` 注册扩展的机制。可以参考 [Retriever](../Best%20Practice/rag.md#Retriever) 和 [Reranker](../Best%20Practice/rag.md#Reranker) 的文档，在遇到不能满足需求的时候通过编写自己的相似度计算和排序策略来实现自己的应用。
 
-## 版本-5：自定义存储后端
+## 版本-6：自定义存储后端
 
 在定义好 Node Group 的转换规则之后，`LazyLLM` 会把检索过程中用到的转换得到的 Node Group 内容保存起来，这样后续使用的时候可以避免重复执行转换操作。为了方便用户存取不同种类的数据，`LazyLLM` 支持用户自定义存储后端。
 
-如果没有指定，`LazyLLM` 默认使用基于 dict 的 key/value 作为存储后端。用户可以通过 `Document` 的参数 `store_conf` 来指定其它存储后端。例如想使用 Milvus 作为存储后端，我们可以这样配置：
+如果没有指定，`LazyLLM` 默认使用 `MapStore` （基于 dict 的 key/value 存储）作为存储后端。
+用户可以通过 `Document` 的参数 `store_conf` 来指定其它存储后端。例如想使用 Milvus 作为存储后端，我们可以这样配置：
 
 ```python
 milvus_store_conf = {
     'type': 'milvus',
     'kwargs': {
-        'uri': store_file,
+        'uri': '/path/to/milvus/dir/milvus.db',
         'index_kwargs': {
             'index_type': 'HNSW',
             'metric_type': 'COSINE',
@@ -342,19 +393,35 @@ milvus_store_conf = {
 }
 ```
 
-其中 `type` 为后端类型，`kwargs` 时需要传递给后端的参数。各字段含义如下：
+其中 `type` 为后端类型，`kwargs` 时需要传递给后端的参数。各字段含义可见 [RAG 最佳实践](../Best%20Practice/rag.md#存储和索引)。
 
-* `type`：需要使用的后端类型。目前支持：
-    - `map`：内存 key/value 存储；
-    - `chroma`：使用 Chroma 存储数据；
-        - `dir`（必填）：存储数据的目录。
-    - `milvus`：使用 Milvus 存储数据。
-        - `uri`（必填）：Milvus 存储地址，可以是一个文件路径或者如 `ip:port` 格式的 url；
-        - `index_kwargs`（可选）：Milvus 索引配置，可以是一个 dict 或者 list。如果是一个 dict 表示所有的 embedding index 使用同样的配置；如果是一个 list，list 中的元素是 dict，表示由 `embed_key` 所指定的 embedding 所使用的配置。当前只支持 `floaing point embedding` 和 `sparse embedding` 两种 embedding 类型，分别支持的参数如下：
-            - `floating point embedding`：[https://milvus.io/docs/index-vector-fields.md?tab=floating](https://milvus.io/docs/index-vector-fields.md?tab=floating)
-            - `sparse embedding`：[https://milvus.io/docs/index-vector-fields.md?tab=sparse](https://milvus.io/docs/index-vector-fields.md?tab=sparse)
+!!! 注意
 
-如果使用 Milvus，我们还需要给 `Document` 传递 `doc_fields` 参数，用于指定需要存储的字段及类型等信息。例如下面的配置：
+    在最新版本的 `LazyLLM` 中，推荐传入`segment_store` 和 `vector_store` 两个字段，分别指定切片存储和向量存储的配置。对于原先传入 `type` 字段的情况，`LazyLLM` 会自动将 `type` 字段自动映射，如果为向量存储，则默认切片存储为 `MapStore`。
+
+如果用户期望在本地存储切片数据，可以传入 `segment_store` 字段，指定 `type` 为 `map`，并传入 `uri` 字段，指定切片存储的目录。
+```python
+store_conf = {
+    'segment_store': {
+        'type': 'map',
+        'kwargs': {
+            'uri': '/path/to/segment/dir/sqlite3.db',
+        },
+    },
+    'vector_store': {
+        'type': 'milvus',
+        'kwargs': {
+            'uri': '/path/to/milvus/dir/milvus.db',
+            'index_kwargs': {
+                'index_type': 'HNSW',
+                'metric_type': 'COSINE',
+            }
+        },
+    },
+}
+```
+
+如果使用 Milvus，还可以给 `Document` 传递 `doc_fields` 参数，用于指定需要存储的字段及类型等信息。例如下面的配置：
 
 ```python
 doc_fields = {
@@ -447,109 +514,39 @@ if __name__ == '__main__':
 
 </details>
 
-## 版本-6：自定义索引后端
+## 版本-7：离在线分离，接入远程部署的 `Document`
 
-为了加速数据检索和满足不同的检索需求，`LazyLLM` 还支持为不同的存储后端指定索引后端，可以通过 `Document` 的参数 `store_conf` 中的 `indices` 字段来指定。在 `indices` 配置的索引类型可以在 `Retriever` 时使用（通过 `index` 参数指定）。
+RAG系统往往包含文档解析与在线问答两阶段，其中文档解析阶段耗时较长，但可以离线执行，而问答阶段则需要快速响应。为了满足这一需求，`LazyLLM` 提供了 `Document` 的远程部署与接入功能，支持用户将 `Document` 部署在远程服务器上，并使用 url 的方式接入。
 
-例如想使用基于 dict 的 key/value 存储，并且使用 Milvus 作为该存储的检索后端，我们可以这样配置：
-
+### 使用服务模式启动 `Document`
 ```python
-milvus_store_conf = {
-    'type': 'map',
-    'indices': {
-        'smart_embedding_index': {
-            'backend': 'milvus',
-            'kwargs': {
-                'uri': store_file,
-                'index_kwargs': {
-                    'index_type': 'HNSW',
-                    'metric_type': 'COSINE',
-                }
-            },
-        },
-    },
-}
+docs = lazyllm.Document(dataset_path="rag_master",
+                        name="doc_server",
+                        embed=lazyllm.TrainableModule("bge-large-zh-v1.5"),
+                        server=9200,
+                        store_conf=milvus_store_conf,
+                        doc_fields=doc_fields)
+docs.create_node_group(name="sentences", transform=lambda s: '。'.split(s))
+docs.activate_groups(["sentences", "CoarseChunk"]) # 使用 docs.activate_group('sentences', embed_keys=['xxx']) 激活单个节点组
+
+docs.start()
 ```
 
-其中的参数 `type` 在 版本-5 中已经介绍过，这里不再重复。`indices` 是一个 dict，其中 key 是索引类型，value 是一个 dict，取值根据不同的索引类型而不同。
+其中 `server` 参数指定为 `9200`，表示使用服务模式启动 `Document`，在调用 `docs.start()` 之后，`Document` 会启动一个服务，并指定为 `9200` 端口。（也可以指定为 `True`，表示随机分配一个端口）
 
-目前 `indices` 只支持 `smart_embedding_index`，其中的参数包括：
+在启动前，确保文档服务已经创建了所需的所有节点组，并根据需求执行 `docs.activate_groups()` 激活相应的节点组，只有激活的节点组才会被服务发现，并在后续的文档解析和检索中使用。此处我们激活了 `sentences` 和 `CoarseChunk` 两个节点组，默认激活所有向量模型，如果`docs`传入了字典格式的多个向量模型，传参时仅需传入对应向量模型的 key 即可。
 
-* `backend`：指定用于进行 embedding 检索的索引后端类型。目前仅支持 `milvus`；
-* `kwargs`：需要传给索引后端的参数。在本例中传给 `milvus` 后端的参数和 版本-5 小节中介绍的 `milvus` 存储后端的参数一样。
 
-下面是一个使用 `milvus` 作为索引后端的完整例子：
+### 使用 url 接入 `Document`
 
-<details>
-
-<summary>附完整代码（点击展开）：</summary>
-
+启动后，假设文档服务部署在 `127.0.0.1` 的 `9200` 端口，则可以通过 `http://127.0.0.1:9200/` 访问文档服务。我们使用 `lazyllm.UrlDocument` 来接入文档服务，并指定文档服务的名称 `doc_server`。
 ```python
-# -*- coding: utf-8 -*-
+docs2 = lazyllm.Document(url="http://127.0.0.1:9200/", name="doc_server")
+retriever = lazyllm.Retriever(doc=docs2, group_name="sentences", topk=3)
 
-import os
-import lazyllm
-from lazyllm import bind
-import tempfile
-
-def run(query):
-    _, store_file = tempfile.mkstemp(suffix=".db")
-
-    milvus_store_conf = {
-        'type': 'map',
-        'indices': {
-            'smart_embedding_index': {
-                'backend': 'milvus',
-                'kwargs': {
-                    'uri': store_file,
-                    'index_kwargs': {
-                        'index_type': 'HNSW',
-                        'metric_type': 'COSINE',
-                    }
-                },
-            },
-        },
-    }
-
-    documents = lazyllm.Document(dataset_path="rag_master",
-                                 embed=lazyllm.TrainableModule("bge-large-zh-v1.5"),
-                                 manager=False,
-                                 store_conf=milvus_store_conf)
-
-    documents.create_node_group(name="sentences",
-                                transform=lambda s: '。'.split(s))
-
-    prompt = 'You will play the role of an AI Q&A assistant and complete a dialogue task.'\
-        ' In this task, you need to provide your answer based on the given context and question.'
-
-    with lazyllm.pipeline() as ppl:
-        ppl.retriever = lazyllm.Retriever(doc=documents, group_name="sentences", topk=3,
-                                          index='smart_embedding_index')
-
-        ppl.reranker = lazyllm.Reranker(name='ModuleReranker',
-                                        model="bge-reranker-large",
-                                        topk=1,
-                                        output_format='content',
-                                        join=True) | bind(query=ppl.input)
-
-        ppl.formatter = (
-            lambda nodes, query: dict(context_str=nodes, query=query)
-        ) | bind(query=ppl.input)
-
-        ppl.llm = lazyllm.TrainableModule('internlm2-chat-7b').prompt(
-            lazyllm.ChatPrompter(instruction=prompt, extra_keys=['context_str']))
-
-        rag = lazyllm.ActionModule(ppl)
-        rag.start()
-        res = rag(query)
-
-    os.remove(store_file)
-
-    return res
-
-if __name__ == '__main__':
-    res = run('何为天道？')
-    print(f'answer: {res}')
+query = "何为天道？"
+res = retriever(query=query)
+print(f"answer: {res}")
 ```
 
-</details>
+此时，`docs2` 的 `url` 参数指向了文档服务的地址，`name` 参数指定为 `doc_server`，表示文档服务的名称。用户便可以直接使用 `docs2` 进行检索，而无需关心文档服务部署在何处。
